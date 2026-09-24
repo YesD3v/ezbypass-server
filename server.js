@@ -108,7 +108,20 @@ function buildInjectedScript(pageUrl, proxyBase) {
   },true);
   document.addEventListener("submit",function(e){
     var f=e.target;
-    if(f&&f.action){try{f.action=toProxy(f.action);}catch(err){}}
+    if(!f)return;
+    if(!f.method || f.method.toUpperCase()==="GET"){
+      e.preventDefault();
+      try{
+        var targetUrl = new URL(f.action || PAGE, PAGE);
+        var formData = new FormData(f);
+        for(var pair of formData.entries()){
+          targetUrl.searchParams.append(pair[0], pair[1]);
+        }
+        window.location.href = toProxy(targetUrl.href);
+      }catch(err){}
+    }else{
+      if(f.action){try{f.action=toProxy(f.action);}catch(err){}}
+    }
   },true);
   try{if(window.top!==window){Object.defineProperty(window,"top",{get:function(){return window;}});}}catch(e){}
 })();
