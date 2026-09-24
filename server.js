@@ -262,7 +262,71 @@ router.get(["/api/proxy/page", "/api/proxy/page/*"], async (req, res) => {
   }
 });
 
-app.get('/', (req, res) => res.send('EzBypass Proxy Server is running!'));
+const HOME_HTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EzBypass Browser</title>
+  <style>
+    body {
+      margin: 0; padding: 0;
+      background-color: #000; color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      height: 100vh;
+    }
+    .logo {
+      width: 80px; height: 80px; fill: #fff;
+      filter: drop-shadow(0 0 15px rgba(255,255,255,0.8));
+      margin-bottom: 20px;
+    }
+    h1 { font-weight: 800; letter-spacing: 4px; text-transform: uppercase; margin-bottom: 40px; }
+    form { width: 100%; max-width: 600px; padding: 0 20px; box-sizing: border-box; }
+    input {
+      width: 100%; padding: 18px 25px;
+      background: #0a0a0a; border: 1px solid #333;
+      color: #fff; border-radius: 30px; font-size: 16px;
+      outline: none; transition: 0.3s;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+    }
+    input:focus { border-color: #fff; box-shadow: 0 0 20px rgba(255,255,255,0.2); }
+    .footer { margin-top: 40px; font-size: 12px; color: #555; letter-spacing: 2px; text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <svg class="logo" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
+  </svg>
+  <h1>EzBypass</h1>
+  <form id="searchForm">
+    <input type="text" id="query" placeholder="Search anonymously or enter a URL..." autocomplete="off" autofocus>
+  </form>
+  <div class="footer">Secure • Anonymous • Untraceable</div>
+
+  <script>
+    document.getElementById('searchForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      let val = document.getElementById('query').value.trim();
+      if (!val) return;
+      let target = "";
+      if (/^https?:\\/\\//i.test(val)) {
+        target = val;
+      } else if (val.includes('.') && !val.includes(' ')) {
+        target = 'https://' + val;
+      } else {
+        target = 'https://duckduckgo.com/?q=' + encodeURIComponent(val);
+      }
+      window.location.href = "/api/proxy/page/" + target;
+    });
+  </script>
+</body>
+</html>
+`;
+
+app.get('/', (req, res) => res.send(HOME_HTML));
 app.use(router);
 
 const PORT = process.env.PORT || 3000;
