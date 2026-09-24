@@ -175,12 +175,17 @@ async function pipeStream(webStream, res) {
 }
 
 // NEW PATH-BASED ROUTE
-router.get("/api/proxy/page/*", async (req, res) => {
+router.get(["/api/proxy/page", "/api/proxy/page/*"], async (req, res) => {
   const PREFIX = "/api/proxy/page/";
+  let targetUrl = "";
+
   const idx = req.originalUrl.indexOf(PREFIX);
-  if (idx === -1) { res.status(400).send("Missing url"); return; }
+  if (idx !== -1) {
+    targetUrl = req.originalUrl.substring(idx + PREFIX.length);
+  } else if (req.query.url) {
+    targetUrl = String(req.query.url);
+  }
   
-  const targetUrl = req.originalUrl.substring(idx + PREFIX.length);
   if (!targetUrl) { res.status(400).send("Missing url"); return; }
 
   let parsed;
