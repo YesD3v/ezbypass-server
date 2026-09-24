@@ -5,14 +5,6 @@ const router = express.Router();
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-const DDG_HEADERS = {
-  "User-Agent": UA,
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "en-US,en;q=0.9",
-  "Accept-Encoding": "identity",
-  Connection: "keep-alive",
-};
-
 const SKIP_HEADERS = new Set([
   "content-security-policy",
   "content-security-policy-report-only",
@@ -25,26 +17,19 @@ const SKIP_HEADERS = new Set([
 ]);
 
 function rewriteSetCookie(raw) {
-  return raw
-    .split(/;\s*/g)
-    .filter(part => {
-      const lower = part.trim().toLowerCase();
-      return !lower.startsWith("domain=") && !lower.startsWith("samesite=");
-    })
-    .join("; ") + "; SameSite=None; Secure";
+  return raw.split(/;\s*/g).filter(part => {
+    const lower = part.trim().toLowerCase();
+    return !lower.startsWith("domain=") && !lower.startsWith("samesite=");
+  }).join("; ") + "; SameSite=None; Secure";
 }
 
 function resolveUrl(base, rel) {
   if (!rel || rel.startsWith("javascript:") || rel.startsWith("data:") || rel.startsWith("blob:") || rel.startsWith("mailto:") || rel.startsWith("tel:") || rel === "#" || rel.startsWith("#")) return null;
-  try {
-    return new URL(rel, base).href;
-  } catch {
-    return null;
-  }
+  try { return new URL(rel, base).href; } catch { return null; }
 }
 
 function toProxy(targetUrl, proxyBase) {
-  return `${proxyBase}?url=${encodeURIComponent(targetUrl)}`;
+  return `${proxyBase}${targetUrl}`;
 }
 
 function rewriteAttr(html, attrRegex, base, proxyBase) {
@@ -80,7 +65,7 @@ function buildInjectedScript(pageUrl, proxyBase) {
   function toProxy(u){
     if(!u)return u;
     try{if(u.startsWith(PROXY)||u.startsWith("javascript:")||u.startsWith("data:")||u.startsWith("blob:")||u.startsWith("mailto:")||u.startsWith("#"))return u;}catch(e){}
-    try{return PROXY+"?url="+encodeURIComponent(new URL(u,PAGE).href);}catch(e){return u;}
+    try{return PROXY + new URL(u,PAGE).href;}catch(e){return u;}
   }
   var _fetch=window.fetch;
   window.fetch=function(input,init){
@@ -123,6 +108,14 @@ function buildInjectedScript(pageUrl, proxyBase) {
       if(f.action){try{f.action=toProxy(f.action);}catch(err){}}
     }
   },true);
+  
+  // Override programmatic form submissions
+  var originalSubmit = HTMLFormElement.prototype.submit;
+  HTMLFormElement.prototype.submit = function() {
+    if(this.action) { try { this.action = toProxy(this.action); } catch(e){} }
+    originalSubmit.call(this);
+  };
+
   try{if(window.top!==window){Object.defineProperty(window,"top",{get:function(){return window;}});}}catch(e){}
 })();
 </script>`;
@@ -181,8 +174,13 @@ async function pipeStream(webStream, res) {
   res.end();
 }
 
-router.get("/api/proxy/page", async (req, res) => {
-  const targetUrl = String(req.query["url"] || "").trim();
+// NEW PATH-BASED ROUTE
+router.get("/api/proxy/page/*", async (req, res) => {
+  const PREFIX = "/api/proxy/page/";
+  const idx = req.originalUrl.indexOf(PREFIX);
+  if (idx === -1) { res.status(400).send("Missing url"); return; }
+  
+  const targetUrl = req.originalUrl.substring(idx + PREFIX.length);
   if (!targetUrl) { res.status(400).send("Missing url"); return; }
 
   let parsed;
@@ -197,7 +195,8 @@ router.get("/api/proxy/page", async (req, res) => {
 
   const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
   const host = req.headers["x-forwarded-host"] || req.get("host") || "localhost";
-  const proxyBase = `${proto}://${host}/api/proxy/page`;
+  // The trailing slash here is critical so URLs append natively
+  const proxyBase = `${proto}://${host}/api/proxy/page/`;
   const browserCookies = req.headers["cookie"];
 
   try {
@@ -258,9 +257,7 @@ router.get("/api/proxy/page", async (req, res) => {
   }
 });
 
-// Health check endpoint for Render
 app.get('/', (req, res) => res.send('EzBypass Proxy Server is running!'));
-
 app.use(router);
 
 const PORT = process.env.PORT || 3000;
