@@ -392,17 +392,21 @@ router.get(["/api/proxy/page", "/api/proxy/page/*"], async (req, res) => {
   const browserCookies = req.headers["cookie"];
 
   try {
+    const headers = {
+      "User-Agent": req.headers["user-agent"] || UA,
+      Accept: req.headers["accept"] || "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+      "Accept-Language": req.headers["accept-language"] || "en-US,en;q=0.9",
+      "Accept-Encoding": "identity",
+      Referer: parsed.origin,
+    };
+    if (browserCookies) headers.Cookie = browserCookies;
+    if (req.headers.range) headers.Range = req.headers.range;
+
     const fetchRes = await fetch(targetUrl, {
-      headers: {
-        "User-Agent": UA,
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "identity",
-        Referer: parsed.origin,
-        ...(browserCookies ? { Cookie: browserCookies } : {}),
-      },
+      headers,
       redirect: "follow",
     });
+    res.status(fetchRes.status);
 
     const finalUrl = fetchRes.url || targetUrl;
     const ct = fetchRes.headers.get("content-type") || "application/octet-stream";
