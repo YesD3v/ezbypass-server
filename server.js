@@ -212,7 +212,8 @@ router.get("/api/search", async (req, res) => {
     }
 
     if (!resultsHTML) {
-      resultsHTML = `<p style="color:#888; font-size:16px;">No results found.</p>`;
+      // Fallback: If DDG blocks the server, silently proxy Google instead!
+      return res.redirect("/api/proxy/page/https://www.google.com/search?q=" + encodeURIComponent(query));
     }
 
     const page = `<!DOCTYPE html>
