@@ -8,7 +8,10 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 async function getVqd(query) {
   try {
     const fetchUrl = "https://duckduckgo.com/?q=" + encodeURIComponent(query) + "&ia=web";
-    const res = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(fetchUrl), { headers: { "User-Agent": UA } });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    const res = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(fetchUrl), { headers: { "User-Agent": UA }, signal: controller.signal });
+    clearTimeout(timeout);
     const html = await res.text();
     const match = html.match(/vqd=['"]([^'"]+)['"]/);
     return match ? match[1] : null;
@@ -273,7 +276,8 @@ router.get("/api/search", async (req, res) => {
       if (type === 'web') {
         return res.redirect("/api/proxy/page/https://www.google.com/search?q=" + encodeURIComponent(query));
       } else {
-        resultsHTML = `<p style="color:#888; font-size:16px;">No ${type} found.</p>`;
+        if (type === "images") return res.redirect("/api/proxy/page?url=" + encodeURIComponent("https://www.google.com/search?tbm=isch&q=" + query));
+        if (type === "videos") return res.redirect("/api/proxy/page?url=" + encodeURIComponent("https://www.google.com/search?tbm=vid&q=" + query));
       }
     }
 
@@ -286,6 +290,7 @@ router.get("/api/search", async (req, res) => {
       <style>
         body { background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 30px 5vw; margin:0; }
         .tabs { display: flex; gap: 20px; border-bottom: 1px solid #222; padding-bottom: 12px; margin-bottom: 30px; overflow-x: auto; }
+        .tabs::-webkit-scrollbar { display: none; }
         .tab { color: #888; text-decoration: none; font-weight: 600; font-size: 15px; position: relative; white-space: nowrap; }
         .tab:hover { color: #bbb; }
         .tab.active { color: #fff; }
@@ -514,10 +519,10 @@ const HOME_HTML = `
       }
       .pull-tab {
         position: absolute; top: 0; left: 50%; transform: translateX(-50%) translateY(-100%);
-        width: 60px; height: 28px; background: rgba(20, 20, 20, 0.8);
+        width: 80px; height: 18px; background: rgba(20, 20, 20, 0.8);
         backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
         border: 1px solid rgba(255, 255, 255, 0.1); border-top: none;
-        border-radius: 0 0 14px 14px; display: flex; align-items: center; justify-content: center;
+        border-radius: 0 0 10px 10px; display: flex; align-items: center; justify-content: center;
         color: rgba(255,255,255,0.6); cursor: pointer; z-index: 10;
         transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s, color 0.2s;
       }
@@ -527,7 +532,7 @@ const HOME_HTML = `
       .pull-tab.visible {
         transform: translateX(-50%) translateY(0);
       }
-      .pull-tab svg { width: 18px; height: 18px; }
+      .pull-tab svg { width: 16px; height: 16px; margin-top:-4px; }
 
       /* Mobile Compatibility */
     @media (max-width: 600px) {
@@ -559,7 +564,8 @@ const HOME_HTML = `
       <button id="btn-forward" class="icon-btn" title="Forward">
         <svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
-      <button id="btn-reload" class="icon-btn" title="Reload">
+      <button id="btn-close" class="icon-btn" title="Close" style="margin-right:8px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+        <button id="btn-reload" class="icon-btn" title="Reload">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
       </button>
       
@@ -589,6 +595,12 @@ const HOME_HTML = `
       // Auto-hide topbar logic
       const wrapper = document.getElementById('topbar-wrapper');
       const pullTab = document.getElementById('pull-tab');
+      const btnClose = document.getElementById('btn-close');
+      if(btnClose) btnClose.addEventListener('click', () => {
+        clearTimeout(hideTimeout);
+        wrapper.classList.add('hidden');
+        pullTab.classList.add('visible');
+      });
       let hideTimeout;
       
       function resetHideTimer() {
