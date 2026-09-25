@@ -227,49 +227,76 @@ router.get("/api/search", async (req, res) => {
           </div>
         `;
       }
+    
     } else if (type === 'images') {
-      const vqd = await getVqd(query);
-      if (vqd) {
-        const url = `https://duckduckgo.com/i.js?q=${encodeURIComponent(query)}&o=json&p=-1&vqd=${encodeURIComponent(vqd)}&f=,,,,,&s=0`;
-        const ddgRes = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(url), { headers: { "User-Agent": UA } });
-        const data = await ddgRes.json();
+      try {
+        const url = 'https://www.bing.com/images/search?q=' + encodeURIComponent(query);
+        const bingRes = await fetch(url, { headers: { "User-Agent": UA } });
+        const html = await bingRes.text();
         
-        resultsHTML = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px;">';
-        for (const img of data.results || []) {
-          const proxiedLink = "/api/proxy/page/" + img.url;
-          resultsHTML += `
-            <a href="${proxiedLink}" class="image-result" style="text-decoration:none; color:#fff;">
-              <img src="${img.thumbnail || img.image}" style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px; border:1px solid #333;" />
-              <div style="font-size:12px; margin-top:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${img.title}</div>
-            </a>
-          `;
+        const matches = [...html.matchAll(/m="({.*?})"/g)];
+        let items = [];
+        for (let i = 0; i < Math.min(30, matches.length); i++) {
+          try {
+            let obj = JSON.parse(matches[i][1].replace(/&quot;/g, '"'));
+            if (obj.murl && obj.turl) items.push(obj);
+          } catch(e) {}
         }
-        resultsHTML += '</div>';
+        
+        if (items.length > 0) {
+          resultsHTML = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px;">';
+          for (let item of items) {
+            const proxyUrl = '/api/proxy/page?url=' + encodeURIComponent(item.purl);
+            resultsHTML += `
+              <a href="${proxyUrl}" style="display: block; overflow: hidden; border-radius: 8px;">
+                <img src="${item.turl.replace('&amp;', '&')}" style="width: 100%; height: auto; border-radius: 8px; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+              </a>
+            `;
+          }
+          resultsHTML += '</div>';
+        }
+      } catch (err) {
+        console.error("Image search error:", err);
       }
+
+
     } else if (type === 'videos') {
-      const vqd = await getVqd(query);
-      if (vqd) {
-        const url = `https://duckduckgo.com/v.js?q=${encodeURIComponent(query)}&o=json&p=-1&vqd=${encodeURIComponent(vqd)}&f=,,,,,&s=0`;
-        const ddgRes = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(url), { headers: { "User-Agent": UA } });
-        const data = await ddgRes.json();
+      try {
+        const url = 'https://www.bing.com/videos/search?q=' + encodeURIComponent(query);
+        const bingRes = await fetch(url, { headers: { "User-Agent": UA } });
+        const html = await bingRes.text();
         
-        resultsHTML = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">';
-        for (const vid of data.results || []) {
-          const thumb = vid.images?.large || vid.images?.medium || vid.images?.small;
-          const videoUrl = vid.content || vid.embed_url;
-          const proxiedLink = "/api/proxy/page/" + videoUrl;
-          resultsHTML += `
-            <a href="${proxiedLink}" class="video-result" style="text-decoration:none; color:#fff; background:#111; border-radius:8px; overflow:hidden; border:1px solid #333; display:block;">
-              <img src="${thumb}" style="width:100%; aspect-ratio:16/9; object-fit:cover;" />
-              <div style="padding:12px;">
-                <div style="font-size:14px; font-weight:600; margin-bottom:4px;">${vid.title}</div>
-                <div style="font-size:12px; color:#888;">${vid.publisher || vid.uploader || ''}</div>
-              </div>
-            </a>
-          `;
+        const matches = [...html.matchAll(/mmeta="({.*?})"[^>]*><a aria-label="([^"]+)"/g)];
+        let items = [];
+        for (let i = 0; i < Math.min(30, matches.length); i++) {
+          try {
+            let obj = JSON.parse(matches[i][1].replace(/&quot;/g, '"'));
+            if (obj.murl && obj.turl) {
+              obj.title = matches[i][2].replace(/&#39;/g, "'").split(' &#183; ')[0] || "Video Result";
+              items.push(obj);
+            }
+          } catch(e) {}
         }
-        resultsHTML += '</div>';
+        
+        if (items.length > 0) {
+          resultsHTML = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">';
+          for (let item of items) {
+            const proxyUrl = '/api/proxy/page?url=' + encodeURIComponent(item.murl);
+            resultsHTML += `
+              <a href="${proxyUrl}" style="text-decoration: none; color: white;">
+                <div style="padding:10px; background:#111; border-radius:8px; height: 100%; display: flex; flex-direction: column;">
+                  <img src="${item.turl.replace('&amp;', '&')}" style="width:100%; border-radius:4px; margin-bottom: 8px; object-fit: cover; aspect-ratio: 16/9;">
+                  <h3 style="margin: 0; font-size:14px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">${item.title}</h3>
+                </div>
+              </a>
+            `;
+          }
+          resultsHTML += '</div>';
+        }
+      } catch (err) {
+        console.error("Video search error:", err);
       }
+
     }
 
     if (!resultsHTML) {
