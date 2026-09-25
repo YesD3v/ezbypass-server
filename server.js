@@ -5,6 +5,18 @@ const router = express.Router();
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
+async function getVqd(query) {
+  try {
+    const fetchUrl = "https://duckduckgo.com/?q=" + encodeURIComponent(query) + "&ia=web";
+    const res = await fetch(fetchUrl, { headers: { "User-Agent": UA } });
+    const html = await res.text();
+    const match = html.match(/vqd=['"]([^'"]+)['"]/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
 const SKIP_HEADERS = new Set([
   "content-security-policy",
   "content-security-policy-report-only",
@@ -176,44 +188,93 @@ async function pipeStream(webStream, res) {
 // Custom Search Engine Route (Using Anti-Bot resilient POST API)
 router.get("/api/search", async (req, res) => {
   const query = req.query.q;
+  const type = req.query.type || 'web';
   if (!query) return res.send("No query provided.");
   
   try {
-    const ddgRes = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), {
-      headers: { "User-Agent": UA }
-    });
-    const html = await ddgRes.text();
-    
     let resultsHTML = "";
-    const resultRegex = /<h2 class="result__title">\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>[\s\S]*?<a class="result__snippet[^>]*>([\s\S]*?)<\/a>/gi;
     
-    let match;
-    while ((match = resultRegex.exec(html)) !== null) {
-      let rawLink = match[1];
-      if (rawLink.includes('uddg=')) {
-        try {
-          let urlParam = new URL("https:" + rawLink).searchParams.get('uddg');
-          if (urlParam) rawLink = decodeURIComponent(urlParam);
-        } catch(e){}
+    if (type === 'web') {
+      const ddgRes = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), {
+        headers: { "User-Agent": UA }
+      });
+      const html = await ddgRes.text();
+      
+      const resultRegex = /<h2 class="result__title">\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>[\s\S]*?<a class="result__snippet[^>]*>([\s\S]*?)<\/a>/gi;
+      let match;
+      while ((match = resultRegex.exec(html)) !== null) {
+        let rawLink = match[1];
+        if (rawLink.includes('uddg=')) {
+          try {
+            let urlParam = new URL("https:" + rawLink).searchParams.get('uddg');
+            if (urlParam) rawLink = decodeURIComponent(urlParam);
+          } catch(e){}
+        }
+        if (rawLink.startsWith('/')) rawLink = "https://duckduckgo.com" + rawLink;
+        
+        const title = match[2].replace(/<[^>]+>/g, '');
+        const snippet = match[3].replace(/<[^>]+>/g, '');
+        const proxiedLink = "/api/proxy/page/" + rawLink;
+        
+        resultsHTML += `
+          <div class="result">
+            <a href="${proxiedLink}" class="title">${title}</a>
+            <div class="url">${rawLink}</div>
+            <div class="snippet">${snippet}</div>
+          </div>
+        `;
       }
-      if (rawLink.startsWith('/')) rawLink = "https://duckduckgo.com" + rawLink;
-      
-      const title = match[2].replace(/<[^>]+>/g, '');
-      const snippet = match[3].replace(/<[^>]+>/g, '');
-      const proxiedLink = "/api/proxy/page/" + rawLink;
-      
-      resultsHTML += `
-        <div class="result">
-          <a href="${proxiedLink}" class="title">${title}</a>
-          <div class="url">${rawLink}</div>
-          <div class="snippet">${snippet}</div>
-        </div>
-      `;
+    } else if (type === 'images') {
+      const vqd = await getVqd(query);
+      if (vqd) {
+        const url = `https://duckduckgo.com/i.js?q=${encodeURIComponent(query)}&o=json&p=-1&vqd=${encodeURIComponent(vqd)}&f=,,,,,&s=0`;
+        const ddgRes = await fetch(url, { headers: { "User-Agent": UA } });
+        const data = await ddgRes.json();
+        
+        resultsHTML = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px;">';
+        for (const img of data.results || []) {
+          const proxiedLink = "/api/proxy/page/" + img.url;
+          resultsHTML += `
+            <a href="${proxiedLink}" class="image-result" style="text-decoration:none; color:#fff;">
+              <img src="${img.thumbnail || img.image}" style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px; border:1px solid #333;" />
+              <div style="font-size:12px; margin-top:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${img.title}</div>
+            </a>
+          `;
+        }
+        resultsHTML += '</div>';
+      }
+    } else if (type === 'videos') {
+      const vqd = await getVqd(query);
+      if (vqd) {
+        const url = `https://duckduckgo.com/v.js?q=${encodeURIComponent(query)}&o=json&p=-1&vqd=${encodeURIComponent(vqd)}&f=,,,,,&s=0`;
+        const ddgRes = await fetch(url, { headers: { "User-Agent": UA } });
+        const data = await ddgRes.json();
+        
+        resultsHTML = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">';
+        for (const vid of data.results || []) {
+          const thumb = vid.images?.large || vid.images?.medium || vid.images?.small;
+          const videoUrl = vid.content || vid.embed_url;
+          const proxiedLink = "/api/proxy/page/" + videoUrl;
+          resultsHTML += `
+            <a href="${proxiedLink}" class="video-result" style="text-decoration:none; color:#fff; background:#111; border-radius:8px; overflow:hidden; border:1px solid #333; display:block;">
+              <img src="${thumb}" style="width:100%; aspect-ratio:16/9; object-fit:cover;" />
+              <div style="padding:12px;">
+                <div style="font-size:14px; font-weight:600; margin-bottom:4px;">${vid.title}</div>
+                <div style="font-size:12px; color:#888;">${vid.publisher || vid.uploader || ''}</div>
+              </div>
+            </a>
+          `;
+        }
+        resultsHTML += '</div>';
+      }
     }
 
     if (!resultsHTML) {
-      // Fallback: If DDG blocks the server, silently proxy Google instead!
-      return res.redirect("/api/proxy/page/https://www.google.com/search?q=" + encodeURIComponent(query));
+      if (type === 'web') {
+        return res.redirect("/api/proxy/page/https://www.google.com/search?q=" + encodeURIComponent(query));
+      } else {
+        resultsHTML = `<p style="color:#888; font-size:16px;">No ${type} found.</p>`;
+      }
     }
 
     const page = `<!DOCTYPE html>
@@ -248,9 +309,9 @@ router.get("/api/search", async (req, res) => {
     <body>
       <a href="#" class="header-logo">EzBypass Search</a>
       <div class="tabs">
-        <a href="#" class="tab active">Web</a>
-        <a href="#" class="tab" onclick="alert('Image search coming soon!')">Images</a>
-        <a href="#" class="tab" onclick="alert('Video search coming soon!')">Videos</a>
+        <a href="/api/search?q=${encodeURIComponent(query)}&type=web" class="tab ${type === 'web' ? 'active' : ''}">Web</a>
+        <a href="/api/search?q=${encodeURIComponent(query)}&type=images" class="tab ${type === 'images' ? 'active' : ''}">Images</a>
+        <a href="/api/search?q=${encodeURIComponent(query)}&type=videos" class="tab ${type === 'videos' ? 'active' : ''}">Videos</a>
       </div>
       <div class="results">
         ${resultsHTML}
