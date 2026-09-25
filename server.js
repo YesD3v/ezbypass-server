@@ -8,7 +8,7 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 async function getVqd(query) {
   try {
     const fetchUrl = "https://duckduckgo.com/?q=" + encodeURIComponent(query) + "&ia=web";
-    const res = await fetch(fetchUrl, { headers: { "User-Agent": UA } });
+    const res = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(fetchUrl), { headers: { "User-Agent": UA } });
     const html = await res.text();
     const match = html.match(/vqd=['"]([^'"]+)['"]/);
     return match ? match[1] : null;
@@ -195,7 +195,7 @@ router.get("/api/search", async (req, res) => {
     let resultsHTML = "";
     
     if (type === 'web') {
-      const ddgRes = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), {
+      const ddgRes = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent("https://html.duckduckgo.com/html/?q=" + query), {
         headers: { "User-Agent": UA }
       });
       const html = await ddgRes.text();
@@ -228,7 +228,7 @@ router.get("/api/search", async (req, res) => {
       const vqd = await getVqd(query);
       if (vqd) {
         const url = `https://duckduckgo.com/i.js?q=${encodeURIComponent(query)}&o=json&p=-1&vqd=${encodeURIComponent(vqd)}&f=,,,,,&s=0`;
-        const ddgRes = await fetch(url, { headers: { "User-Agent": UA } });
+        const ddgRes = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(url), { headers: { "User-Agent": UA } });
         const data = await ddgRes.json();
         
         resultsHTML = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px;">';
@@ -247,7 +247,7 @@ router.get("/api/search", async (req, res) => {
       const vqd = await getVqd(query);
       if (vqd) {
         const url = `https://duckduckgo.com/v.js?q=${encodeURIComponent(query)}&o=json&p=-1&vqd=${encodeURIComponent(vqd)}&f=,,,,,&s=0`;
-        const ddgRes = await fetch(url, { headers: { "User-Agent": UA } });
+        const ddgRes = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(url), { headers: { "User-Agent": UA } });
         const data = await ddgRes.json();
         
         resultsHTML = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">';
@@ -505,7 +505,31 @@ const HOME_HTML = `
     .welcome h1 { font-weight: 800; letter-spacing: 6px; text-transform: uppercase; margin: 0 0 10px 0; font-size: 32px; color: #fff; text-shadow: 0 0 20px rgba(255,255,255,0.3); }
     .welcome p { color: #666; letter-spacing: 3px; text-transform: uppercase; font-size: 11px; }
 
-    /* Mobile Compatibility */
+    
+      .topbar-wrapper {
+        transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .topbar-wrapper.hidden {
+        transform: translateY(-150%);
+      }
+      .pull-tab {
+        position: absolute; top: 0; left: 50%; transform: translateX(-50%) translateY(-100%);
+        width: 60px; height: 28px; background: rgba(20, 20, 20, 0.8);
+        backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
+        border: 1px solid rgba(255, 255, 255, 0.1); border-top: none;
+        border-radius: 0 0 14px 14px; display: flex; align-items: center; justify-content: center;
+        color: rgba(255,255,255,0.6); cursor: pointer; z-index: 10;
+        transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s, color 0.2s;
+      }
+      .pull-tab:hover {
+        background: rgba(40, 40, 40, 0.9); color: #fff;
+      }
+      .pull-tab.visible {
+        transform: translateX(-50%) translateY(0);
+      }
+      .pull-tab svg { width: 18px; height: 18px; }
+
+      /* Mobile Compatibility */
     @media (max-width: 600px) {
       .topbar { height: 40px; border-radius: 20px; padding: 0 8px; gap: 4px; width: 95%; }
       .icon-btn { width: 28px; height: 28px; }
@@ -519,7 +543,12 @@ const HOME_HTML = `
 <body>
   <div class="bg-container"><div class="grid"></div></div>
   
-  <div class="topbar-wrapper">
+  
+    <div id="pull-tab" class="pull-tab">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+    </div>
+
+    <div class="topbar-wrapper" id="topbar-wrapper">
     <header class="topbar">
       <button id="btn-home" class="icon-btn" title="Home">
         <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><polyline points="9 22 9 12 15 12 15 22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -549,14 +578,45 @@ const HOME_HTML = `
     <div class="dot"></div><div class="dot"></div><div class="dot"></div>
   </div>
 
-  <iframe id="browser-frame" src=""></iframe>
+  <iframe id="browser-frame" src="" allow="fullscreen; autoplay; encrypted-media; picture-in-picture"></iframe>
 
   <script>
     const frame = document.getElementById('browser-frame');
     const input = document.getElementById('omnibox');
     const welcome = document.getElementById('welcome-text');
     const loader = document.getElementById('loader');
-    let historyStack = [];
+    
+      // Auto-hide topbar logic
+      const wrapper = document.getElementById('topbar-wrapper');
+      const pullTab = document.getElementById('pull-tab');
+      let hideTimeout;
+      
+      function resetHideTimer() {
+        clearTimeout(hideTimeout);
+        wrapper.classList.remove('hidden');
+        pullTab.classList.remove('visible');
+        
+        // Only auto-hide if a page is actually loaded (opacity 1)
+        if (frame.style.opacity == 1 || frame.style.opacity === "1") {
+          hideTimeout = setTimeout(() => {
+            wrapper.classList.add('hidden');
+            pullTab.classList.add('visible');
+          }, 3500);
+        }
+      }
+      
+      wrapper.addEventListener('mouseenter', () => clearTimeout(hideTimeout));
+      wrapper.addEventListener('mouseleave', resetHideTimer);
+      pullTab.addEventListener('mouseenter', resetHideTimer);
+      input.addEventListener('focus', () => clearTimeout(hideTimeout));
+      input.addEventListener('blur', resetHideTimer);
+      
+      // Override frame load to trigger the hide timer
+      frame.addEventListener('load', () => {
+        resetHideTimer();
+      });
+
+      let historyStack = [];
     let currentIndex = -1;
 
     function loadUrl(val, addToHistory=true) {
