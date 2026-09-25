@@ -281,7 +281,11 @@ router.get("/api/search", async (req, res) => {
         if (items.length > 0) {
           resultsHTML = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">';
           for (let item of items) {
-            const proxyUrl = '/api/proxy/page?url=' + encodeURIComponent(item.murl);
+            let proxyUrl = '/api/proxy/page?url=' + encodeURIComponent(item.murl);
+            if (item.murl.includes('youtube.com/watch?v=')) {
+              const vidId = item.murl.split('v=')[1].split('&')[0];
+              proxyUrl = 'https://www.youtube.com/embed/' + vidId + '?autoplay=1';
+            }
             resultsHTML += `
               <a href="${proxyUrl}" style="text-decoration: none; color: white;">
                 <div style="padding:10px; background:#111; border-radius:8px; height: 100%; display: flex; flex-direction: column;">
