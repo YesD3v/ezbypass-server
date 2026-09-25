@@ -173,6 +173,90 @@ async function pipeStream(webStream, res) {
   res.end();
 }
 
+// Custom Search Engine Route
+router.get("/api/search", async (req, res) => {
+  const query = req.query.q;
+  if (!query) return res.send("No query provided.");
+  
+  try {
+    const ddgRes = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), {
+      headers: { "User-Agent": UA }
+    });
+    const html = await ddgRes.text();
+    
+    let resultsHTML = "";
+    const resultRegex = /<h2 class="result__title">\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>\s*<\/h2>[\s\S]*?<a class="result__snippet[^>]*>(.*?)<\/a>/gi;
+    
+    let match;
+    while ((match = resultRegex.exec(html)) !== null) {
+      let rawLink = match[1];
+      if (rawLink.includes('uddg=')) {
+        try {
+          let urlParam = new URL("https:" + rawLink).searchParams.get('uddg');
+          if (urlParam) rawLink = decodeURIComponent(urlParam);
+        } catch(e){}
+      }
+      if (rawLink.startsWith('/')) rawLink = "https://duckduckgo.com" + rawLink;
+      
+      const title = match[2].replace(/<[^>]+>/g, '');
+      const snippet = match[3].replace(/<[^>]+>/g, '');
+      const proxiedLink = "/api/proxy/page/" + rawLink;
+      
+      resultsHTML += `
+        <div class="result">
+          <a href="${proxiedLink}" class="title">${title}</a>
+          <div class="url">${rawLink}</div>
+          <div class="snippet">${snippet}</div>
+        </div>
+      `;
+    }
+
+    if (!resultsHTML) {
+      resultsHTML = `<p style="color:#888; font-size:16px;">No results found.</p>`;
+    }
+
+    const page = `<!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <title>${query} - EzBypass Search</title>
+      <style>
+        body { background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 40px 10vw; margin:0; }
+        .tabs { display: flex; gap: 30px; border-bottom: 1px solid #222; padding-bottom: 12px; margin-bottom: 40px; }
+        .tab { color: #888; text-decoration: none; font-weight: 600; font-size: 16px; position: relative; }
+        .tab:hover { color: #bbb; }
+        .tab.active { color: #fff; }
+        .tab.active::after { content: ''; position: absolute; bottom: -13px; left: 0; right: 0; height: 2px; background: #fff; }
+        
+        .result { margin-bottom: 35px; max-width: 650px; }
+        .result .title { color: #8ab4f8; font-size: 20px; text-decoration: none; display: block; margin-bottom: 6px; font-weight: 500; }
+        .result .title:hover { text-decoration: underline; }
+        .result .url { color: #81c995; font-size: 13px; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .result .snippet { color: #aaa; font-size: 14px; line-height: 1.6; }
+        
+        .header-logo { color: #fff; font-size: 22px; font-weight: 800; letter-spacing: 2px; margin-bottom: 30px; display: inline-block; text-decoration: none; }
+      </style>
+    </head>
+    <body>
+      <a href="#" class="header-logo">EzBypass Search</a>
+      <div class="tabs">
+        <a href="#" class="tab active">Web</a>
+        <a href="#" class="tab" onclick="alert('Image search coming soon!')">Images</a>
+        <a href="#" class="tab" onclick="alert('Video search coming soon!')">Videos</a>
+      </div>
+      <div class="results">
+        ${resultsHTML}
+      </div>
+    </body>
+    </html>`;
+    
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(page);
+  } catch (err) {
+    res.status(500).send("Search engine error");
+  }
+});
+
 router.get(["/api/proxy/page", "/api/proxy/page/*"], async (req, res) => {
   const PREFIX = "/api/proxy/page/";
   let targetUrl = "";
@@ -273,7 +357,6 @@ const HOME_HTML = `
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       overflow: hidden;
     }
-    /* Sleek 3D Background */
     .bg-container {
       position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 0;
       background: radial-gradient(circle at 50% 50%, #151515 0%, #000 100%);
@@ -291,7 +374,6 @@ const HOME_HTML = `
       100% { transform: perspective(600px) rotateX(60deg) translateY(50px) translateZ(-200px); }
     }
     
-    /* Floating Top Bar */
     .topbar-wrapper {
       position: absolute; top: 15px; left: 0; right: 0;
       display: flex; justify-content: center;
@@ -325,13 +407,11 @@ const HOME_HTML = `
     }
     #omnibox::placeholder { color: #666; }
     
-    /* Iframe */
     #browser-frame {
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
       border: none; background: transparent; z-index: 5; opacity: 0; transition: opacity 0.3s;
     }
     
-    /* Custom 3-Dot Loader */
     .loader {
       display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
       gap: 8px; z-index: 20; pointer-events: none;
@@ -348,7 +428,6 @@ const HOME_HTML = `
       50% { transform: translateY(-4px); opacity: 1; box-shadow: 0 0 12px rgba(255,255,255,0.9); }
     }
     
-    /* Welcome Text */
     .welcome {
       position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
       text-align: center; pointer-events: none; z-index: 2;
@@ -372,7 +451,7 @@ const HOME_HTML = `
         <svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <button id="btn-reload" class="icon-btn" title="Reload">
-        <svg viewBox="0 0 24 24"><path d="M21 2v6h-6M3 12a9 9 0 1 0 2.63-6.37L21 8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
       </button>
       
       <form id="nav-form" class="omnibox-form">
@@ -403,26 +482,26 @@ const HOME_HTML = `
     function loadUrl(val, addToHistory=true) {
       if (!val) return;
       let target = "";
+      
       if (/^https?:\\/\\//i.test(val)) {
-        target = val;
+        target = "/api/proxy/page/" + val;
       } else if (val.includes('.') && !val.includes(' ')) {
-        target = 'https://' + val;
+        target = "/api/proxy/page/https://" + val;
       } else {
-        target = 'https://www.google.com/search?q=' + encodeURIComponent(val);
+        target = "/api/search?q=" + encodeURIComponent(val);
       }
       
-      input.value = target;
-      frame.src = "/api/proxy/page/" + target;
+      input.value = val;
+      frame.src = target;
       
-      // UI State
-      input.blur(); // Close the text box
+      input.blur();
       welcome.style.display = 'none';
       frame.style.opacity = '0';
       loader.style.display = 'flex';
       
       if (addToHistory) {
         historyStack = historyStack.slice(0, currentIndex + 1);
-        historyStack.push(target);
+        historyStack.push(val);
         currentIndex++;
       }
     }
@@ -459,18 +538,22 @@ const HOME_HTML = `
       currentIndex++;
     });
 
-    // Hide loader and show frame when loaded
     frame.addEventListener('load', () => {
       if (!frame.src || frame.src === window.location.href) return;
       loader.style.display = 'none';
       frame.style.opacity = '1';
-      frame.style.background = '#fff';
       
       try {
-        let frameUrl = frame.contentWindow.location.pathname;
-        if (frameUrl.startsWith('/api/proxy/page/')) {
-          let realUrl = frame.contentWindow.location.href.substring(frame.contentWindow.location.href.indexOf('/api/proxy/page/') + 16);
-          input.value = decodeURIComponent(realUrl);
+        let realUrl = frame.contentWindow.location.href;
+        
+        if (realUrl.includes('/api/proxy/page/')) {
+          let extracted = realUrl.substring(realUrl.indexOf('/api/proxy/page/') + 16);
+          input.value = decodeURIComponent(extracted);
+          frame.style.background = '#fff';
+        } else if (realUrl.includes('/api/search')) {
+          let q = new URLSearchParams(frame.contentWindow.location.search).get('q');
+          input.value = q || "";
+          frame.style.background = '#000';
         }
       } catch(e) {}
     });
