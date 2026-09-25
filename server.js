@@ -55,34 +55,44 @@ function rewriteCss(css, base, proxyBase) {
 function buildInjectedScript(pageUrl, proxyBase) {
   return `<script>
 (function(){
+  if(window.__EZPROXY_INJECTED)return;
+  window.__EZPROXY_INJECTED=true;
   var PROXY="${proxyBase}";
   var PAGE="${pageUrl}";
+  function isProxied(u){
+    if(!u||typeof u!=="string")return true;
+    try{if(u.startsWith(PROXY)||u.indexOf("/api/proxy/")!==-1)return true;}catch(e){}
+    return false;
+  }
   function toProxy(u){
     if(!u)return u;
-    try{if(u.startsWith(PROXY)||u.startsWith("javascript:")||u.startsWith("data:")||u.startsWith("blob:")||u.startsWith("mailto:")||u.startsWith("#"))return u;}catch(e){}
+    if(typeof u!=="string")return u;
+    try{if(isProxied(u)||u.startsWith("javascript:")||u.startsWith("data:")||u.startsWith("blob:")||u.startsWith("mailto:")||u.startsWith("#")||u.startsWith("about:"))return u;}catch(e){}
     try{return PROXY+"?url="+encodeURIComponent(new URL(u,PAGE).href);}catch(e){return u;}
   }
   var _fetch=window.fetch;
   window.fetch=function(input,init){
-    if(typeof input==="string"&&!input.startsWith(PROXY))input=toProxy(input);
+    if(typeof input==="string"&&!isProxied(input)){input=toProxy(input);}
+    else if(input&&typeof input==="object"&&input.url&&!isProxied(input.url)){input=new Request(toProxy(input.url),input);}
     return _fetch.call(this,input,init);
   };
   var _open=XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open=function(m,u){
-    try{if(typeof u==="string")u=toProxy(u);}catch(e){}
+    try{if(typeof u==="string"&&!isProxied(u))u=toProxy(u);}catch(e){}
     var args=Array.prototype.slice.call(arguments);
     args[1]=u;
     return _open.apply(this,args);
   };
   var _push=history.pushState,_replace=history.replaceState;
-  history.pushState=function(s,t,u){return _push.call(this,s,t,u?toProxy(u):u);};
-  history.replaceState=function(s,t,u){return _replace.call(this,s,t,u?toProxy(u):u);};
+  history.pushState=function(s,t,u){try{return _push.call(this,s,t,u?toProxy(u):u);}catch(e){return _push.call(this,s,t,u);}};
+  history.replaceState=function(s,t,u){try{return _replace.call(this,s,t,u?toProxy(u):u);}catch(e){return _replace.call(this,s,t,u);}};
   document.addEventListener("click",function(e){
     var el=e.target;
     while(el&&el.tagName!=="A")el=el.parentElement;
     if(!el)return;
     var href=el.getAttribute("href");
     if(!href||href.startsWith("javascript:")||href.startsWith("#"))return;
+    if(isProxied(href))return;
     var proxied=toProxy(href);
     if(proxied!==href){e.preventDefault();window.location.href=proxied;}
   },true);
@@ -98,12 +108,13 @@ function buildInjectedScript(pageUrl, proxyBase) {
         window.location.href=toProxy(tUrl.href);
       }catch(err){}
     }else{
-      if(f.action){try{f.action=toProxy(f.action);}catch(err){}}
+      if(f.action&&!isProxied(f.action)){try{f.action=toProxy(f.action);}catch(err){}}
     }
   },true);
   var origSubmit=HTMLFormElement.prototype.submit;
-  HTMLFormElement.prototype.submit=function(){if(this.action){try{this.action=toProxy(this.action);}catch(e){}}origSubmit.call(this);};
+  HTMLFormElement.prototype.submit=function(){if(this.action&&!isProxied(this.action)){try{this.action=toProxy(this.action);}catch(e){}}origSubmit.call(this);};
   try{if(window.top!==window){Object.defineProperty(window,"top",{get:function(){return window;}});}}catch(e){}
+  try{Object.defineProperty(document,"domain",{get:function(){return location.hostname;},set:function(){}});}catch(e){}
 })();
 <\/script>`;
 }
@@ -148,7 +159,7 @@ async function pipeStream(webStream, res) {
   res.end();
 }
 
-// ─── Web proxy (server-side fetch, rewrite, serve) ──────────────────────────
+// ─── Web proxy ──────────────────────────────────────────────────────────────
 router.get("/proxy/page", async (req, res) => {
   const targetUrl = String(req.query.url || "").trim();
   if (!targetUrl) { res.status(400).send("Missing url"); return; }
@@ -284,9 +295,6 @@ router.get("/proxy/search", async (req, res) => {
               image: obj.murl,
               thumbnail: obj.turl.replace(/&amp;/g, "&"),
               url: obj.purl || obj.murl,
-              width: obj.mw || 0,
-              height: obj.mh || 0,
-              source: obj.purl || "",
             });
           }
         } catch {}
@@ -307,9 +315,7 @@ router.get("/proxy/search", async (req, res) => {
             results.push({
               title: rawTitle.split(" &#183; ")[0] || "Video",
               content: obj.murl,
-              images: { large: obj.turl.replace(/&amp;/g, "&") },
-              publisher: "",
-              uploader: "",
+              thumbnail: obj.turl.replace(/&amp;/g, "&"),
             });
           }
         } catch {}
@@ -339,389 +345,479 @@ router.get("/proxy/image", async (req, res) => {
   }
 });
 
-// ─── SPA Frontend ───────────────────────────────────────────────────────────
-const HOME_HTML = `<!DOCTYPE html>
+// ─── HOME PAGE (original UI + native search rendering) ─────────────────────
+const HOME_HTML = `
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>EzBypass</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
-  :root {
-    color-scheme: dark;
-    --bg: #050505; --bg-2: #0a0a0a; --bg-elev: #111111; --bg-elev-2: #171717;
-    --border: #282828; --border-strong: #4b4b4b;
-    --text: #f4f4f1; --text-dim: #a8a8a3; --text-mute: #676762;
-    --accent: #f2f2f0; --accent-glow: #ffffff;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Space Grotesk', sans-serif; -webkit-font-smoothing: antialiased; }
-  .root { min-height: 100vh; display: flex; flex-direction: column; position: relative; overflow: hidden;
-    background: radial-gradient(ellipse 70% 40% at 50% 0%, rgba(255,255,255,.095), transparent 70%), var(--bg); }
-  .bg-grid { position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: .26;
-    background-image: linear-gradient(rgba(255,255,255,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px);
-    background-size: 64px 64px;
-    mask-image: radial-gradient(ellipse at 50% 16%, #000 5%, transparent 66%); -webkit-mask-image: radial-gradient(ellipse at 50% 16%, #000 5%, transparent 66%); }
-  .topbar { position: sticky; top: 0; z-index: 50; background: rgba(5,5,5,0.9); border-bottom: 1px solid var(--border);
-    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); flex-shrink: 0; }
-  .topbar-inner { max-width: 1100px; margin: 0 auto; padding: 0 16px; height: 56px; display: flex; align-items: center; gap: 10px; }
-  .topbar-inner.browsing { max-width: none; }
-  .icon-btn { width: 34px; height: 34px; border-radius: 8px; background: var(--bg-elev); border: 1px solid var(--border);
-    color: var(--text-dim); cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: border-color .15s, color .15s; }
-  .icon-btn:hover { border-color: var(--accent); color: var(--accent-glow); }
-  .search-btn { padding: 9px 20px; background: var(--accent); color: #000; border: none; border-radius: 10px;
-    font-size: 14px; font-weight: 600; cursor: pointer; flex-shrink: 0; transition: background .15s; font-family: inherit; }
-  .search-btn:hover { background: var(--accent-glow); }
-  .search-wrap { position: relative; flex: 1; }
-  .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-mute); pointer-events: none; }
-  .search-input { width: 100%; padding: 9px 14px 9px 42px; background: var(--bg-elev); border: 1px solid var(--border);
-    border-radius: 10px; color: var(--text); font-size: 14px; outline: none; transition: border-color .15s; box-sizing: border-box; font-family: inherit; }
-  .search-input:focus { border-color: var(--accent); }
-  .address-input { flex: 1; padding: 7px 14px; background: var(--bg-elev); border: 1px solid var(--border);
-    border-radius: 8px; color: var(--text); font-size: 13px; outline: none; transition: border-color .15s; font-family: inherit; }
-  .address-input:focus { border-color: var(--accent); }
-  .tab-bar { max-width: 1100px; margin: 0 auto; padding: 0 16px; display: flex; gap: 4px; border-top: 1px solid var(--border); }
-  .tab-btn { padding: 7px 16px; background: none; border: none; border-bottom: 2px solid transparent;
-    color: var(--text-mute); font-size: 13px; font-weight: 400; cursor: pointer; text-transform: capitalize;
-    transition: color .15s; margin-bottom: -1px; font-family: inherit; }
-  .tab-btn.active { border-bottom-color: var(--accent); color: var(--accent-glow); font-weight: 600; }
-  .tab-btn:hover { color: var(--text-dim); }
-  .landing-tabs { display: flex; gap: 8px; margin-top: 4px; }
-  .landing-tab { padding: 6px 14px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
-    color: var(--text-mute); font-size: 13px; cursor: pointer; text-transform: capitalize; transition: all .15s; font-family: inherit; }
-  .landing-tab.active { background: rgba(255,255,255,0.15); border-color: var(--accent); color: var(--accent-glow); font-weight: 600; }
-  .main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 60px; flex: 1; position: relative; z-index: 1; }
-  .landing { display: flex; flex-direction: column; align-items: center; padding-top: 60px; gap: 16px; }
-  .landing h1 { font-size: 28px; font-weight: 700; }
-  .landing p { font-size: 15px; color: var(--text-mute); text-align: center; max-width: 420px; }
-  .dots { display: flex; gap: 6px; justify-content: center; padding-top: 60px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
-  .dot:nth-child(2) { animation-delay: .2s; } .dot:nth-child(3) { animation-delay: .4s; }
-  @keyframes pulse { 0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.2)} }
-  .error-box { margin-top: 40px; padding: 16px 20px; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.3);
-    border-radius: 10px; color: #fca5a5; font-size: 14px; text-align: center; }
-  .web-results { max-width: 740px; display: flex; flex-direction: column; gap: 2px; }
-  .web-result { padding: 12px 14px; border-radius: 10px; border: 1px solid transparent; transition: background .12s, border-color .12s; cursor: default; }
-  .web-result:hover { background: var(--bg-elev); border-color: var(--border); }
-  .wr-url { font-size: 11px; color: var(--text-mute); margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 500px; }
-  .wr-title { font-size: 16px; font-weight: 600; color: #fff; margin-bottom: 4px; line-height: 1.3; }
-  .wr-snippet { font-size: 13px; color: var(--text-dim); line-height: 1.6; margin-bottom: 8px; }
-  .wr-actions { display: flex; gap: 8px; }
-  .wr-open { padding: 5px 14px; background: var(--accent); border: none; border-radius: 7px; color: #000; font-size: 12px; font-weight: 600; cursor: pointer; transition: background .15s; font-family: inherit; }
-  .wr-open:hover { background: var(--accent-glow); }
-  .img-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
-  .img-card { border-radius: 10px; overflow: hidden; background: var(--bg-elev); border: 1px solid var(--border);
-    cursor: pointer; transition: transform .15s, border-color .15s; aspect-ratio: 1/1; position: relative; }
-  .img-card:hover { transform: scale(1.03); border-color: var(--accent); }
-  .img-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .img-card .no-img { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--text-mute); font-size: 12px; }
-  .vid-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-  .vid-card { display: block; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 12px;
-    overflow: hidden; text-decoration: none; transition: border-color .15s, transform .15s; cursor: pointer; }
-  .vid-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-  .vid-thumb { position: relative; aspect-ratio: 16/9; background: var(--bg-2); }
-  .vid-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .vid-play-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    background: rgba(0,0,0,0.25); color: #fff; opacity: 0; transition: opacity .15s; }
-  .vid-card:hover .vid-play-overlay { opacity: 1; }
-  .vid-play-circle { width: 48px; height: 48px; border-radius: 50%; background: rgba(255,255,255,0.85); display: flex; align-items: center; justify-content: center; }
-  .vid-meta { padding: 10px 12px 12px; }
-  .vid-title { font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.4; margin-bottom: 4px;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .vid-pub { font-size: 12px; color: var(--text-mute); }
-  .load-more { display: flex; justify-content: center; margin-top: 32px; }
-  .load-more-btn { padding: 10px 28px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
-    color: var(--text-dim); font-size: 14px; font-weight: 500; cursor: pointer; transition: border-color .15s, color .15s; font-family: inherit; }
-  .load-more-btn:hover { border-color: var(--accent); color: var(--accent-glow); }
-  .lightbox { position: fixed; inset: 0; z-index: 999; background: rgba(0,0,0,0.88); backdrop-filter: blur(8px);
-    display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; gap: 12px; }
-  .lightbox img { max-width: 90vw; max-height: 80vh; border-radius: 10px; object-fit: contain; display: block; }
-  .lb-info { display: flex; align-items: center; gap: 12px; }
-  .lb-title { font-size: 13px; color: var(--text-dim); max-width: 500px; text-align: center; }
-  .lb-source { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; background: var(--accent); color: #000;
-    border-radius: 7px; font-size: 13px; font-weight: 500; text-decoration: none; flex-shrink: 0; cursor: pointer; border: none; font-family: inherit; }
-  .lb-close { position: fixed; top: 16px; right: 16px; width: 36px; height: 36px; border-radius: 50%; background: var(--bg-elev);
-    border: 1px solid var(--border); color: var(--text); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-  .browser-frame { flex: 1; position: relative; display: flex; flex-direction: column; z-index: 1; }
-  .progress-bar { position: absolute; top: 0; left: 0; right: 0; height: 3px; z-index: 10; }
-  .progress-bar-inner { height: 100%; background: var(--accent); animation: progress 1.5s ease-in-out infinite; transform-origin: left; }
-  @keyframes progress { 0%{transform:scaleX(0) translateX(0)}50%{transform:scaleX(0.6) translateX(50%)}100%{transform:scaleX(0) translateX(200%)} }
-  .browser-frame iframe { flex: 1; width: 100%; border: none; min-height: calc(100vh - 56px); display: block; }
-  @media (max-width: 600px) {
-    .img-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
-    .vid-grid { grid-template-columns: 1fr; }
-    .topbar-inner { padding: 0 10px; gap: 6px; }
-    .icon-btn { width: 30px; height: 30px; border-radius: 6px; }
-  }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EzBypass</title>
+  <style>
+    body, html {
+      margin: 0; padding: 0; height: 100vh;
+      background-color: #000; color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+    .bg-container {
+      position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 0;
+      background: radial-gradient(circle at 50% 50%, #151515 0%, #000 100%);
+    }
+    .grid {
+      position: absolute; width: 200%; height: 200%; top: -50%; left: -50%;
+      background-image: linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
+                        linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
+      background-size: 50px 50px;
+      transform: perspective(600px) rotateX(60deg) translateY(-100px) translateZ(-200px);
+      animation: gridMove 15s linear infinite;
+    }
+    @keyframes gridMove {
+      0% { transform: perspective(600px) rotateX(60deg) translateY(0) translateZ(-200px); }
+      100% { transform: perspective(600px) rotateX(60deg) translateY(50px) translateZ(-200px); }
+    }
+    
+    .topbar-wrapper {
+      position: absolute; top: 15px; left: 0; right: 0;
+      display: flex; justify-content: center;
+      z-index: 30; pointer-events: none;
+      transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .topbar-wrapper.hidden { transform: translateY(-150%); }
+    .topbar {
+      pointer-events: auto;
+      height: 44px; background: rgba(20, 20, 20, 0.6);
+      backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
+      border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 22px;
+      display: flex; align-items: center; padding: 0 12px; gap: 6px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+      width: 90%; max-width: 600px;
+      transition: background 0.3s;
+    }
+    .topbar:hover, .topbar:focus-within { background: rgba(28, 28, 28, 0.85); }
+    
+    .icon-btn {
+      background: transparent; border: none; color: #999;
+      cursor: pointer; width: 32px; height: 32px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      transition: 0.2s; padding: 0; flex-shrink: 0;
+    }
+    .icon-btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+    .icon-btn svg { width: 16px; height: 16px; }
+    
+    .omnibox-form { flex: 1; display: flex; align-items: center; margin: 0 5px; }
+    #omnibox {
+      width: 100%; background: transparent; border: none;
+      color: #fff; text-align: center; font-size: 14px; outline: none; letter-spacing: 0.5px;
+    }
+    #omnibox::placeholder { color: #666; }
+    
+    #browser-frame {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      border: none; background: transparent; z-index: 5; opacity: 0; transition: opacity 0.3s;
+    }
+    
+    .loader {
+      display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      gap: 8px; z-index: 20; pointer-events: none;
+    }
+    .dot {
+      width: 12px; height: 12px; background: #fff; border-radius: 50%;
+      opacity: 0.2; animation: bounce 1.2s infinite ease-in-out;
+    }
+    .dot:nth-child(1) { animation-delay: 0s; }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+      0%, 100% { transform: translateY(0); opacity: 0.2; box-shadow: 0 0 0 rgba(255,255,255,0); }
+      50% { transform: translateY(-4px); opacity: 1; box-shadow: 0 0 12px rgba(255,255,255,0.9); }
+    }
+    
+    .welcome {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      text-align: center; pointer-events: none; z-index: 2;
+    }
+    .welcome h1 { font-weight: 800; letter-spacing: 6px; text-transform: uppercase; margin: 0 0 10px 0; font-size: 32px; color: #fff; text-shadow: 0 0 20px rgba(255,255,255,0.3); }
+    .welcome p { color: #666; letter-spacing: 3px; text-transform: uppercase; font-size: 11px; }
+
+    .pull-tab {
+      position: absolute; top: 0; left: 50%; transform: translateX(-50%) translateY(-100%);
+      width: 80px; height: 18px; background: rgba(20, 20, 20, 0.8);
+      backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
+      border: 1px solid rgba(255, 255, 255, 0.1); border-top: none;
+      border-radius: 0 0 10px 10px; display: flex; align-items: center; justify-content: center;
+      color: rgba(255,255,255,0.6); cursor: pointer; z-index: 30;
+      transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s, color 0.2s;
+      pointer-events: auto;
+    }
+    .pull-tab:hover { background: rgba(40, 40, 40, 0.9); color: #fff; }
+    .pull-tab.visible { transform: translateX(-50%) translateY(0); }
+    .pull-tab svg { width: 16px; height: 16px; margin-top:-4px; }
+
+    /* Search results overlay */
+    #search-results {
+      position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      z-index: 10; background: #000; overflow-y: auto; display: none;
+      padding: 80px 5vw 40px;
+    }
+    #search-results .tabs { display: flex; gap: 20px; border-bottom: 1px solid #222; padding-bottom: 12px; margin-bottom: 30px; overflow-x: auto; }
+    #search-results .tabs::-webkit-scrollbar { display: none; }
+    #search-results .tab { color: #888; text-decoration: none; font-weight: 600; font-size: 15px; position: relative; white-space: nowrap; cursor: pointer; background: none; border: none; font-family: inherit; }
+    #search-results .tab:hover { color: #bbb; }
+    #search-results .tab.active { color: #fff; }
+    #search-results .tab.active::after { content: ''; position: absolute; bottom: -13px; left: 0; right: 0; height: 2px; background: #fff; }
+    #search-results .result { margin-bottom: 30px; max-width: 650px; }
+    #search-results .result .title { color: #8ab4f8; font-size: 18px; text-decoration: none; display: block; margin-bottom: 6px; font-weight: 500; cursor: pointer; background: none; border: none; font-family: inherit; padding: 0; text-align: left; }
+    #search-results .result .title:hover { text-decoration: underline; }
+    #search-results .result .url { color: #81c995; font-size: 13px; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #search-results .result .snippet { color: #aaa; font-size: 14px; line-height: 1.5; }
+    #search-results .header-logo { color: #fff; font-size: 20px; font-weight: 800; letter-spacing: 2px; margin-bottom: 25px; display: inline-block; cursor: pointer; background: none; border: none; font-family: inherit; }
+    #search-results .img-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+    #search-results .img-card { border-radius: 8px; overflow: hidden; aspect-ratio: 1/1; cursor: pointer; border: 1px solid #222; transition: transform .15s, border-color .15s; }
+    #search-results .img-card:hover { transform: scale(1.03); border-color: #555; }
+    #search-results .img-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    #search-results .vid-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+    #search-results .vid-card { background: #111; border-radius: 8px; overflow: hidden; cursor: pointer; border: 1px solid #222; transition: transform .15s, border-color .15s; }
+    #search-results .vid-card:hover { transform: translateY(-2px); border-color: #555; }
+    #search-results .vid-card img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; }
+    #search-results .vid-card h3 { margin: 0; padding: 10px 12px; font-size: 14px; line-height: 1.4; font-weight: 500; }
+    #search-results .load-more { text-align: center; margin-top: 30px; }
+    #search-results .load-more button { padding: 10px 28px; background: #111; border: 1px solid #333; border-radius: 8px; color: #aaa; font-size: 14px; cursor: pointer; font-family: inherit; }
+    #search-results .load-more button:hover { border-color: #666; color: #fff; }
+
+    /* Lightbox */
+    #lightbox { display: none; position: fixed; inset: 0; z-index: 999; background: rgba(0,0,0,0.9); backdrop-filter: blur(8px);
+      flex-direction: column; align-items: center; justify-content: center; padding: 24px; gap: 12px; }
+    #lightbox img { max-width: 90vw; max-height: 80vh; border-radius: 10px; object-fit: contain; }
+    #lightbox .lb-close { position: fixed; top: 16px; right: 16px; width: 36px; height: 36px; border-radius: 50%;
+      background: #222; border: 1px solid #444; color: #fff; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    #lightbox .lb-open { padding: 8px 16px; background: #fff; color: #000; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-family: inherit; font-size: 13px; }
+
+    @media (max-width: 600px) {
+      .topbar { height: 40px; border-radius: 20px; padding: 0 8px; gap: 4px; width: 95%; }
+      .icon-btn { width: 28px; height: 28px; }
+      .icon-btn svg { width: 14px; height: 14px; }
+      #omnibox { font-size: 13px; }
+      .welcome h1 { font-size: 24px; letter-spacing: 4px; }
+      .welcome p { font-size: 9px; letter-spacing: 2px; }
+      #search-results { padding: 70px 15px 40px; }
+      #search-results .img-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+      #search-results .vid-grid { grid-template-columns: 1fr; }
+    }
+  </style>
 </head>
 <body>
-<div class="root" id="app"><div class="bg-grid"></div></div>
-<script>
-(function() {
-  var API = '/api';
-  var state = {
-    query: '', submittedQuery: '', tab: 'web',
-    webResults: [], imageResults: [], videoResults: [],
-    loading: false, error: null, page: 1, hasMore: false,
-    browseUrl: null, addressBar: '', iframeLoading: false,
-    lightbox: null
-  };
+  <div class="bg-container"><div class="grid"></div></div>
+  
+  <div id="pull-tab" class="pull-tab">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+  </div>
 
-  function h(tag, attrs) {
-    var el = document.createElement(tag);
-    var children = Array.prototype.slice.call(arguments, 2);
-    if (attrs) {
-      var keys = Object.keys(attrs);
-      for (var ki = 0; ki < keys.length; ki++) {
-        var k = keys[ki], v = attrs[k];
-        if (k === 'style' && typeof v === 'object') { Object.assign(el.style, v); }
-        else if (k.startsWith('on')) { el.addEventListener(k.slice(2).toLowerCase(), v); }
-        else if (k === 'className') { el.className = v; }
-        else if (k === 'innerHTML') { el.innerHTML = v; }
-        else { el.setAttribute(k, v); }
+  <div class="topbar-wrapper" id="topbar-wrapper">
+    <header class="topbar">
+      <button id="btn-home" class="icon-btn" title="Home">
+        <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><polyline points="9 22 9 12 15 12 15 22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="btn-back" class="icon-btn" title="Back">
+        <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="btn-forward" class="icon-btn" title="Forward">
+        <svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="btn-close" class="icon-btn" title="Close" style="margin-right:8px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
+      <button id="btn-reload" class="icon-btn" title="Reload">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+      </button>
+      
+      <form id="nav-form" class="omnibox-form">
+        <input type="text" id="omnibox" placeholder="Search anonymously or enter URL..." autocomplete="off" autofocus />
+      </form>
+    </header>
+  </div>
+  
+  <div class="welcome" id="welcome-text">
+    <h1>EzBypass</h1>
+    <p>Untraceable &bull; Secure &bull; Anonymous</p>
+  </div>
+
+  <div class="loader" id="loader">
+    <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+  </div>
+
+  <iframe id="browser-frame" src="" allow="fullscreen; autoplay; encrypted-media; picture-in-picture" sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-modals"></iframe>
+
+  <div id="search-results"></div>
+
+  <div id="lightbox">
+    <img id="lb-img" src="" alt="">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span id="lb-title" style="font-size:13px;color:#aaa;max-width:500px;text-align:center;"></span>
+      <button class="lb-open" id="lb-open">Open source</button>
+    </div>
+    <button class="lb-close" id="lb-close">&times;</button>
+  </div>
+
+  <script>
+    const frame = document.getElementById('browser-frame');
+    const input = document.getElementById('omnibox');
+    const welcome = document.getElementById('welcome-text');
+    const loader = document.getElementById('loader');
+    const searchResults = document.getElementById('search-results');
+    const wrapper = document.getElementById('topbar-wrapper');
+    const pullTab = document.getElementById('pull-tab');
+    const lightbox = document.getElementById('lightbox');
+    const lbImg = document.getElementById('lb-img');
+    const lbTitle = document.getElementById('lb-title');
+    const lbOpen = document.getElementById('lb-open');
+    const lbClose = document.getElementById('lb-close');
+
+    let hideTimeout;
+    let historyStack = [];
+    let currentIndex = -1;
+    let currentTab = 'web';
+    let currentQuery = '';
+    let currentPage = 1;
+    let currentLightboxUrl = '';
+    let mode = 'home'; // 'home', 'search', 'browse'
+
+    function proxyImg(url) { return '/api/proxy/image?url=' + encodeURIComponent(url); }
+    function proxyPage(url) { return '/api/proxy/page?url=' + encodeURIComponent(url); }
+
+    // Auto-hide topbar
+    document.getElementById('btn-close').addEventListener('click', () => {
+      clearTimeout(hideTimeout);
+      wrapper.classList.add('hidden');
+      pullTab.classList.add('visible');
+    });
+
+    function resetHideTimer() {
+      clearTimeout(hideTimeout);
+      wrapper.classList.remove('hidden');
+      pullTab.classList.remove('visible');
+      if (mode === 'browse') {
+        hideTimeout = setTimeout(() => {
+          wrapper.classList.add('hidden');
+          pullTab.classList.add('visible');
+        }, 3500);
       }
     }
-    for (var ci = 0; ci < children.length; ci++) {
-      var c = children[ci];
-      if (c == null) continue;
-      if (Array.isArray(c)) { for (var j = 0; j < c.length; j++) { if (c[j]) el.appendChild(typeof c[j] === 'string' ? document.createTextNode(c[j]) : c[j]); } }
-      else { el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); }
+
+    wrapper.addEventListener('mouseenter', () => clearTimeout(hideTimeout));
+    wrapper.addEventListener('mouseleave', resetHideTimer);
+    pullTab.addEventListener('mouseenter', resetHideTimer);
+    input.addEventListener('focus', () => clearTimeout(hideTimeout));
+    input.addEventListener('blur', resetHideTimer);
+    frame.addEventListener('load', resetHideTimer);
+
+    // Lightbox
+    lbClose.addEventListener('click', () => { lightbox.style.display = 'none'; });
+    lightbox.addEventListener('click', (e) => { if (e.target === lightbox) lightbox.style.display = 'none'; });
+    lbOpen.addEventListener('click', () => { lightbox.style.display = 'none'; openInProxy(currentLightboxUrl); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') lightbox.style.display = 'none'; });
+
+    function showLightbox(img) {
+      lbImg.src = proxyImg(img.image);
+      lbTitle.textContent = img.title || '';
+      currentLightboxUrl = img.url || img.image;
+      lightbox.style.display = 'flex';
     }
-    return el;
-  }
 
-  function proxyPageUrl(u) { return API + '/proxy/page?url=' + encodeURIComponent(u); }
-  function proxyImgUrl(u) { return API + '/proxy/image?url=' + encodeURIComponent(u); }
-  function isUrl(s) { return /^https?:\\/\\//i.test(s.trim()) || /^[a-zA-Z0-9-]+\\.[a-zA-Z]{2,}(\\/|$)/.test(s.trim()); }
-
-  function doSearch(q, t, p, append) {
-    state.loading = true; state.error = null; render();
-    fetch(API + '/proxy/search?q=' + encodeURIComponent(q) + '&type=' + t + '&page=' + p)
-      .then(function(res) { if (!res.ok) throw new Error('Search failed (' + res.status + ')'); return res.json(); })
-      .then(function(data) {
-        var results = data.results || [];
-        if (t === 'web') { state.webResults = append ? state.webResults.concat(results) : results; state.hasMore = results.length >= 10; }
-        else if (t === 'images') { state.imageResults = append ? state.imageResults.concat(results) : results; state.hasMore = results.length >= 40; }
-        else if (t === 'videos') { state.videoResults = append ? state.videoResults.concat(results) : results; state.hasMore = results.length >= 25; }
-      })
-      .catch(function(e) { state.error = e.message || 'Search failed'; })
-      .finally(function() { state.loading = false; render(); });
-  }
-
-  function handleSubmit(q) {
-    q = (q || '').trim(); if (!q) return;
-    if (isUrl(q)) {
-      var url = /^https?:\\/\\//i.test(q) ? q : 'https://' + q;
-      openInProxy(url);
-    } else {
-      state.submittedQuery = q; state.page = 1;
-      state.webResults = []; state.imageResults = []; state.videoResults = [];
-      doSearch(q, state.tab, 1, false);
+    function setMode(m) {
+      mode = m;
+      welcome.style.display = m === 'home' ? 'block' : 'none';
+      searchResults.style.display = m === 'search' ? 'block' : 'none';
+      frame.style.opacity = m === 'browse' ? '1' : '0';
+      frame.style.pointerEvents = m === 'browse' ? 'auto' : 'none';
+      if (m !== 'browse') frame.src = '';
+      if (m === 'home') loader.style.display = 'none';
+      resetHideTimer();
     }
-  }
 
-  function openInProxy(url) { state.browseUrl = url; state.addressBar = url; state.iframeLoading = true; render(); }
-  function exitBrowser() { state.browseUrl = null; state.addressBar = ''; render(); }
-
-  function changeTab(t) {
-    state.tab = t; state.page = 1;
-    if (state.submittedQuery) {
-      if (t === 'web') state.webResults = [];
-      if (t === 'images') state.imageResults = [];
-      if (t === 'videos') state.videoResults = [];
-      doSearch(state.submittedQuery, t, 1, false);
-    } else { render(); }
-  }
-
-  function loadMore() { state.page++; doSearch(state.submittedQuery, state.tab, state.page, true); }
-
-  function render() {
-    var root = document.getElementById('app');
-    root.innerHTML = '<div class="bg-grid"></div>';
-
-    var currentResults = state.tab === 'web' ? state.webResults : state.tab === 'images' ? state.imageResults : state.videoResults;
-    var hasResults = currentResults.length > 0;
-
-    // HEADER
-    var header = h('header', { className: 'topbar' });
-    var inner = h('div', { className: 'topbar-inner' + (state.browseUrl ? ' browsing' : '') });
-
-    if (state.browseUrl) {
-      inner.appendChild(h('button', { className: 'icon-btn', title: 'Back to search', onClick: exitBrowser, innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>' }));
-      inner.appendChild(h('button', { className: 'icon-btn', title: 'Refresh', onClick: function() { state.iframeLoading = true; render(); var f = document.getElementById('proxy-iframe'); if (f) f.src = proxyPageUrl(state.browseUrl); }, innerHTML: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>' }));
-      inner.appendChild(h('button', { className: 'icon-btn', title: 'Home', onClick: function() { state.query = ''; exitBrowser(); }, innerHTML: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>' }));
-      var addrForm = h('form', { style: { flex: '1', display: 'flex' }, onSubmit: function(e) { e.preventDefault(); var v = this.querySelector('input').value.trim(); if (!v) return; var u = /^https?:\\/\\//i.test(v) ? v : 'https://' + v; openInProxy(u); } });
-      var addrInput = h('input', { className: 'address-input', value: state.addressBar, onFocus: function() { this.select(); } });
-      addrForm.appendChild(addrInput);
-      inner.appendChild(addrForm);
-    } else {
-      var searchForm = h('form', { style: { flex: '1', display: 'flex', gap: '8px' }, onSubmit: function(e) { e.preventDefault(); handleSubmit(this.querySelector('input').value); } });
-      var wrap = h('div', { className: 'search-wrap' });
-      wrap.appendChild(h('span', { className: 'search-icon', innerHTML: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>' }));
-      var searchInput = h('input', { className: 'search-input', placeholder: 'Search or enter a URL\\u2026', value: state.query, autofocus: 'true', onInput: function(e) { state.query = e.target.value; } });
-      wrap.appendChild(searchInput);
-      searchForm.appendChild(wrap);
-      searchForm.appendChild(h('button', { type: 'submit', className: 'search-btn' }, 'Search'));
-      inner.appendChild(searchForm);
+    function openInProxy(url) {
+      setMode('browse');
+      frame.style.opacity = '0';
+      loader.style.display = 'flex';
+      frame.src = proxyPage(url);
+      input.value = url;
+      historyStack = historyStack.slice(0, currentIndex + 1);
+      historyStack.push(url);
+      currentIndex++;
     }
-    header.appendChild(inner);
 
-    if (!state.browseUrl && hasResults) {
-      var tabBar = h('div', { className: 'tab-bar' });
-      ['web', 'images', 'videos'].forEach(function(t) {
-        tabBar.appendChild(h('button', { className: 'tab-btn' + (state.tab === t ? ' active' : ''), onClick: function() { changeTab(t); } }, t));
-      });
-      header.appendChild(tabBar);
-    }
-    root.appendChild(header);
-
-    // BROWSER MODE
-    if (state.browseUrl) {
-      var browserDiv = h('div', { className: 'browser-frame' });
-      if (state.iframeLoading) {
-        var bar = h('div', { className: 'progress-bar' });
-        bar.appendChild(h('div', { className: 'progress-bar-inner' }));
-        browserDiv.appendChild(bar);
+    async function doSearch(q, tab, page, append) {
+      if (!append) {
+        setMode('search');
+        loader.style.display = 'flex';
+        searchResults.innerHTML = '';
       }
-      var iframe = h('iframe', {
-        id: 'proxy-iframe',
-        src: proxyPageUrl(state.browseUrl),
-        sandbox: 'allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-modals',
-        allow: 'fullscreen; autoplay; encrypted-media; picture-in-picture',
-        title: 'EzBypass Browser'
-      });
-      iframe.addEventListener('load', function() {
-        state.iframeLoading = false;
-        try {
-          var src = iframe.contentWindow.location.href;
-          if (src) { try { var u = new URL(src); var up = u.searchParams.get('url'); if (up) { state.addressBar = decodeURIComponent(up); state.browseUrl = state.addressBar; } } catch(e){} }
-        } catch(e) {}
-        render();
-      });
-      browserDiv.appendChild(iframe);
-      root.appendChild(browserDiv);
-      return;
-    }
+      currentQuery = q;
+      currentTab = tab;
+      currentPage = page;
+      input.value = q;
 
-    // SEARCH RESULTS
-    var main = h('div', { className: 'main' });
+      try {
+        const res = await fetch('/api/proxy/search?q=' + encodeURIComponent(q) + '&type=' + tab + '&page=' + page);
+        if (!res.ok) throw new Error('Search failed');
+        const data = await res.json();
+        const results = data.results || [];
 
-    if (!hasResults && !state.loading && !state.error) {
-      var landing = h('div', { className: 'landing' });
-      landing.appendChild(h('h1', null, 'EzBypass'));
-      landing.appendChild(h('p', null, 'Search the web freely or enter a URL \\u2014 no filters, no restrictions.'));
-      var tabs = h('div', { className: 'landing-tabs' });
-      ['web', 'images', 'videos'].forEach(function(t) {
-        tabs.appendChild(h('button', { className: 'landing-tab' + (state.tab === t ? ' active' : ''), onClick: function() { state.tab = t; render(); } }, t));
-      });
-      landing.appendChild(tabs);
-      main.appendChild(landing);
-    }
+        loader.style.display = 'none';
 
-    if (state.loading && !hasResults) {
-      var dots = h('div', { className: 'dots' });
-      for (var i = 0; i < 3; i++) dots.appendChild(h('div', { className: 'dot' }));
-      main.appendChild(dots);
-    }
+        if (!append) {
+          searchResults.innerHTML = '';
+          // Header
+          const logo = document.createElement('button');
+          logo.className = 'header-logo';
+          logo.textContent = 'EzBypass Search';
+          logo.onclick = () => setMode('home');
+          searchResults.appendChild(logo);
 
-    if (state.error) main.appendChild(h('div', { className: 'error-box' }, state.error));
-
-    if (state.tab === 'web' && state.webResults.length > 0) {
-      var container = h('div', { className: 'web-results' });
-      state.webResults.forEach(function(r) {
-        var card = h('div', { className: 'web-result' });
-        card.appendChild(h('div', { className: 'wr-url' }, r.display_url || r.url));
-        card.appendChild(h('div', { className: 'wr-title' }, r.title));
-        if (r.snippet) card.appendChild(h('div', { className: 'wr-snippet' }, r.snippet));
-        var actions = h('div', { className: 'wr-actions' });
-        actions.appendChild(h('button', { className: 'wr-open', onClick: function() { openInProxy(r.url); } }, 'Open in proxy'));
-        card.appendChild(actions);
-        container.appendChild(card);
-      });
-      main.appendChild(container);
-    }
-
-    if (state.tab === 'images' && state.imageResults.length > 0) {
-      var grid = h('div', { className: 'img-grid' });
-      state.imageResults.forEach(function(img) {
-        var card = h('div', { className: 'img-card', onClick: function() { state.lightbox = img; render(); } });
-        var imgEl = h('img', { src: proxyImgUrl(img.thumbnail || img.image), alt: img.title || '', loading: 'lazy' });
-        imgEl.addEventListener('error', function() { this.outerHTML = '<div class="no-img">No image</div>'; });
-        card.appendChild(imgEl);
-        grid.appendChild(card);
-      });
-      main.appendChild(grid);
-    }
-
-    if (state.tab === 'videos' && state.videoResults.length > 0) {
-      var vgrid = h('div', { className: 'vid-grid' });
-      state.videoResults.forEach(function(vid) {
-        var thumb = vid.images && (vid.images.large || vid.images.medium || vid.images.small);
-        var videoUrl = vid.content || vid.embed_url;
-        var card = h('div', { className: 'vid-card', onClick: function() { if (videoUrl) openInProxy(videoUrl); } });
-        var thumbDiv = h('div', { className: 'vid-thumb' });
-        if (thumb) {
-          var tImg = h('img', { src: proxyImgUrl(thumb), alt: vid.title || '' });
-          tImg.addEventListener('error', function() { this.style.display = 'none'; });
-          thumbDiv.appendChild(tImg);
+          // Tabs
+          const tabs = document.createElement('div');
+          tabs.className = 'tabs';
+          ['web', 'images', 'videos'].forEach(t => {
+            const btn = document.createElement('button');
+            btn.className = 'tab' + (t === tab ? ' active' : '');
+            btn.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+            btn.onclick = () => doSearch(q, t, 1, false);
+            tabs.appendChild(btn);
+          });
+          searchResults.appendChild(tabs);
         }
-        var overlay = h('div', { className: 'vid-play-overlay' });
-        overlay.appendChild(h('div', { className: 'vid-play-circle', innerHTML: '<svg width="28" height="28" viewBox="0 0 24 24" fill="#000"><polygon points="5 3 19 12 5 21 5 3"/></svg>' }));
-        thumbDiv.appendChild(overlay);
-        card.appendChild(thumbDiv);
-        var meta = h('div', { className: 'vid-meta' });
-        meta.appendChild(h('div', { className: 'vid-title' }, vid.title || ''));
-        if (vid.publisher || vid.uploader) meta.appendChild(h('div', { className: 'vid-pub' }, vid.publisher || vid.uploader));
-        card.appendChild(meta);
-        vgrid.appendChild(card);
-      });
-      main.appendChild(vgrid);
+
+        // Get or create results container
+        let container = searchResults.querySelector('.results-container');
+        if (!container || !append) {
+          container = document.createElement('div');
+          container.className = 'results-container';
+          searchResults.appendChild(container);
+        }
+
+        if (tab === 'web') {
+          results.forEach(r => {
+            const div = document.createElement('div');
+            div.className = 'result';
+            div.innerHTML = '<div class="url">' + (r.display_url || r.url) + '</div><div class="snippet">' + (r.snippet || '') + '</div>';
+            const title = document.createElement('button');
+            title.className = 'title';
+            title.textContent = r.title;
+            title.onclick = () => openInProxy(r.url);
+            div.prepend(div.querySelector('.url'));
+            div.prepend(title);
+            container.appendChild(div);
+          });
+          if (results.length >= 10) addLoadMore(container, q, tab, page + 1);
+        } else if (tab === 'images') {
+          if (!append) container.className = 'results-container img-grid';
+          results.forEach(img => {
+            const card = document.createElement('div');
+            card.className = 'img-card';
+            card.onclick = () => showLightbox(img);
+            const imgEl = document.createElement('img');
+            imgEl.src = proxyImg(img.thumbnail || img.image);
+            imgEl.alt = img.title || '';
+            imgEl.loading = 'lazy';
+            imgEl.onerror = function() { this.parentElement.style.display = 'none'; };
+            card.appendChild(imgEl);
+            container.appendChild(card);
+          });
+          if (results.length >= 40) addLoadMore(searchResults, q, tab, page + 1);
+        } else if (tab === 'videos') {
+          if (!append) container.className = 'results-container vid-grid';
+          results.forEach(vid => {
+            const card = document.createElement('div');
+            card.className = 'vid-card';
+            card.onclick = () => { if (vid.content) openInProxy(vid.content); };
+            if (vid.thumbnail) {
+              const img = document.createElement('img');
+              img.src = proxyImg(vid.thumbnail);
+              img.alt = vid.title || '';
+              img.loading = 'lazy';
+              img.onerror = function() { this.style.display = 'none'; };
+              card.appendChild(img);
+            }
+            const h3 = document.createElement('h3');
+            h3.textContent = vid.title || '';
+            card.appendChild(h3);
+            container.appendChild(card);
+          });
+          if (results.length >= 25) addLoadMore(searchResults, q, tab, page + 1);
+        }
+
+        if (results.length === 0 && !append) {
+          container.innerHTML = '<p style="color:#888;text-align:center;padding:40px 0;">No results found.</p>';
+        }
+      } catch (err) {
+        loader.style.display = 'none';
+        if (!append) searchResults.innerHTML = '<div style="color:#ff6b6b;text-align:center;padding:60px 20px;">' + err.message + '</div>';
+      }
     }
 
-    if (hasResults) {
-      var lm = h('div', { className: 'load-more' });
-      if (state.loading) {
-        var ld = h('div', { className: 'dots' }); for (var di = 0; di < 3; di++) ld.appendChild(h('div', { className: 'dot' })); lm.appendChild(ld);
-      } else if (state.hasMore) {
-        lm.appendChild(h('button', { className: 'load-more-btn', onClick: loadMore }, 'Load more'));
+    function addLoadMore(parent, q, tab, nextPage) {
+      const div = document.createElement('div');
+      div.className = 'load-more';
+      const btn = document.createElement('button');
+      btn.textContent = 'Load more';
+      btn.onclick = () => { div.remove(); doSearch(q, tab, nextPage, true); };
+      div.appendChild(btn);
+      parent.appendChild(div);
+    }
+
+    // Navigation
+    document.getElementById('nav-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const val = input.value.trim();
+      if (!val) return;
+      if (/^https?:\\/\\//i.test(val)) {
+        openInProxy(val);
+      } else if (val.includes('.') && !val.includes(' ')) {
+        openInProxy('https://' + val);
       } else {
-        lm.appendChild(h('span', { style: { fontSize: '13px', color: 'var(--text-mute)' } }, 'No more results'));
+        doSearch(val, currentTab, 1, false);
       }
-      main.appendChild(lm);
-    }
+    });
 
-    root.appendChild(main);
-
-    // LIGHTBOX
-    if (state.lightbox) {
-      var lb = h('div', { className: 'lightbox', onClick: function() { state.lightbox = null; render(); } });
-      var imgWrap = h('div', { onClick: function(e) { e.stopPropagation(); }, style: { maxWidth: '90vw', maxHeight: '80vh' } });
-      imgWrap.appendChild(h('img', { src: proxyImgUrl(state.lightbox.image), alt: state.lightbox.title || '' }));
-      lb.appendChild(imgWrap);
-      var info = h('div', { className: 'lb-info' });
-      info.appendChild(h('span', { className: 'lb-title' }, state.lightbox.title || ''));
-      if (state.lightbox.url) {
-        info.appendChild(h('button', { className: 'lb-source', onClick: function(e) { e.stopPropagation(); openInProxy(state.lightbox.url); state.lightbox = null; } }, 'Open source'));
+    document.getElementById('btn-back').addEventListener('click', () => {
+      if (currentIndex > 0) { currentIndex--; openInProxy(historyStack[currentIndex]); }
+    });
+    document.getElementById('btn-forward').addEventListener('click', () => {
+      if (currentIndex < historyStack.length - 1) { currentIndex++; openInProxy(historyStack[currentIndex]); }
+    });
+    document.getElementById('btn-reload').addEventListener('click', () => {
+      if (mode === 'browse' && frame.src) {
+        frame.style.opacity = '0';
+        loader.style.display = 'flex';
+        try { frame.contentWindow.location.reload(); } catch(e) { frame.src = frame.src; }
       }
-      lb.appendChild(info);
-      lb.appendChild(h('button', { className: 'lb-close', onClick: function(e) { e.stopPropagation(); state.lightbox = null; render(); } }, '\\u00d7'));
-      root.appendChild(lb);
-    }
+      if (mode === 'home') return;
+    });
+    document.getElementById('btn-home').addEventListener('click', () => {
+      input.value = '';
+      setMode('home');
+    });
 
-    if (!state.browseUrl) {
-      var si = root.querySelector('.search-input');
-      if (si && !hasResults) si.focus();
-    }
-  }
-
-  document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && state.lightbox) { state.lightbox = null; render(); } });
-  render();
-})();
-</script>
+    frame.addEventListener('load', () => {
+      if (!frame.src || frame.src === window.location.href) return;
+      loader.style.display = 'none';
+      frame.style.opacity = '1';
+      frame.style.pointerEvents = 'auto';
+      try {
+        let realUrl = frame.contentWindow.location.href;
+        if (realUrl.includes('/api/proxy/page')) {
+          try {
+            const u = new URL(realUrl);
+            const extracted = u.searchParams.get('url');
+            if (extracted) input.value = decodeURIComponent(extracted);
+          } catch(e) {}
+        }
+      } catch(e) {}
+    });
+  </script>
 </body>
-</html>`;
+</html>
+`;
 
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
