@@ -230,8 +230,8 @@ router.get("/api/search", async (req, res) => {
     
     } else if (type === 'images') {
       try {
-        const url = 'https://www.bing.com/images/search?q=' + encodeURIComponent(query);
-        const bingRes = await fetch(url, { headers: { "User-Agent": UA } });
+        const url = 'https://www.bing.com/images/search?q=' + encodeURIComponent(query) + '&adlt=off';
+        const bingRes = await fetch(url, { headers: { "User-Agent": UA, "Cookie": "SRCHHPGUSR=ADLT=OFF;" } });
         const html = await bingRes.text();
         
         const matches = [...html.matchAll(/m="({.*?})"/g)];
@@ -262,8 +262,8 @@ router.get("/api/search", async (req, res) => {
 
     } else if (type === 'videos') {
       try {
-        const url = 'https://www.bing.com/videos/search?q=' + encodeURIComponent(query);
-        const bingRes = await fetch(url, { headers: { "User-Agent": UA } });
+        const url = 'https://www.bing.com/videos/search?q=' + encodeURIComponent(query) + '&adlt=off';
+        const bingRes = await fetch(url, { headers: { "User-Agent": UA, "Cookie": "SRCHHPGUSR=ADLT=OFF;" } });
         const html = await bingRes.text();
         
         const matches = [...html.matchAll(/mmeta="({.*?})"[^>]*><a aria-label="([^"]+)"/g)];
