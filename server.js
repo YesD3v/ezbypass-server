@@ -179,51 +179,36 @@ router.get("/api/search", async (req, res) => {
   if (!query) return res.send("No query provided.");
   
   try {
-    const ddgRes = await fetch("https://lite.duckduckgo.com/lite/", {
-      method: "POST",
-      headers: { 
-        "User-Agent": UA,
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: "q=" + encodeURIComponent(query)
+    const ddgRes = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), {
+      headers: { "User-Agent": UA }
     });
     const html = await ddgRes.text();
     
     let resultsHTML = "";
-    const rows = html.split('<tr>');
-    let currentTitle = "";
-    let currentUrl = "";
-    let currentSnippet = "";
+    const resultRegex = /<h2 class="result__title">\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>[\s\S]*?<a class="result__snippet[^>]*>([\s\S]*?)<\/a>/gi;
     
-    for (let row of rows) {
-      if (row.includes('class="result-url"')) {
-        const aMatch = row.match(/<a[^>]*href="([^"]+)"[^>]*class="result-url"[^>]*>([\s\S]*?)<\/a>/);
-        if (aMatch) {
-          currentUrl = aMatch[1];
-          if (currentUrl.includes('uddg=')) {
-            try {
-              const param = new URL(currentUrl.startsWith('//') ? 'https:' + currentUrl : currentUrl).searchParams.get('uddg');
-              if (param) currentUrl = decodeURIComponent(param);
-            } catch(e){}
-          }
-          currentTitle = aMatch[2].replace(/<[^>]+>/g, '').trim();
-        }
-      } else if (row.includes('class="result-snippet"')) {
-        const snipMatch = row.match(/class="result-snippet"[^>]*>([\s\S]*?)<\/td>/);
-        if (snipMatch) currentSnippet = snipMatch[1].replace(/<[^>]+>/g, '').trim();
-        
-        if (currentTitle && currentUrl) {
-          const proxiedLink = "/api/proxy/page/" + currentUrl;
-          resultsHTML += `
-            <div class="result">
-              <a href="${proxiedLink}" class="title">${currentTitle}</a>
-              <div class="url">${currentUrl}</div>
-              <div class="snippet">${currentSnippet}</div>
-            </div>
-          `;
-          currentTitle = ""; currentUrl = ""; currentSnippet = "";
-        }
+    let match;
+    while ((match = resultRegex.exec(html)) !== null) {
+      let rawLink = match[1];
+      if (rawLink.includes('uddg=')) {
+        try {
+          let urlParam = new URL("https:" + rawLink).searchParams.get('uddg');
+          if (urlParam) rawLink = decodeURIComponent(urlParam);
+        } catch(e){}
       }
+      if (rawLink.startsWith('/')) rawLink = "https://duckduckgo.com" + rawLink;
+      
+      const title = match[2].replace(/<[^>]+>/g, '');
+      const snippet = match[3].replace(/<[^>]+>/g, '');
+      const proxiedLink = "/api/proxy/page/" + rawLink;
+      
+      resultsHTML += `
+        <div class="result">
+          <a href="${proxiedLink}" class="title">${title}</a>
+          <div class="url">${rawLink}</div>
+          <div class="snippet">${snippet}</div>
+        </div>
+      `;
     }
 
     if (!resultsHTML) {
