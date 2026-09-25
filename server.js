@@ -173,42 +173,57 @@ async function pipeStream(webStream, res) {
   res.end();
 }
 
-// Custom Search Engine Route
+// Custom Search Engine Route (Using Anti-Bot resilient POST API)
 router.get("/api/search", async (req, res) => {
   const query = req.query.q;
   if (!query) return res.send("No query provided.");
   
   try {
-    const ddgRes = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), {
-      headers: { "User-Agent": UA }
+    const ddgRes = await fetch("https://lite.duckduckgo.com/lite/", {
+      method: "POST",
+      headers: { 
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: "q=" + encodeURIComponent(query)
     });
     const html = await ddgRes.text();
     
     let resultsHTML = "";
-    const resultRegex = /<h2 class="result__title">\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>\s*<\/h2>[\s\S]*?<a class="result__snippet[^>]*>(.*?)<\/a>/gi;
+    const rows = html.split('<tr>');
+    let currentTitle = "";
+    let currentUrl = "";
+    let currentSnippet = "";
     
-    let match;
-    while ((match = resultRegex.exec(html)) !== null) {
-      let rawLink = match[1];
-      if (rawLink.includes('uddg=')) {
-        try {
-          let urlParam = new URL("https:" + rawLink).searchParams.get('uddg');
-          if (urlParam) rawLink = decodeURIComponent(urlParam);
-        } catch(e){}
+    for (let row of rows) {
+      if (row.includes('class="result-url"')) {
+        const aMatch = row.match(/<a[^>]*href="([^"]+)"[^>]*class="result-url"[^>]*>([\s\S]*?)<\/a>/);
+        if (aMatch) {
+          currentUrl = aMatch[1];
+          if (currentUrl.includes('uddg=')) {
+            try {
+              const param = new URL(currentUrl.startsWith('//') ? 'https:' + currentUrl : currentUrl).searchParams.get('uddg');
+              if (param) currentUrl = decodeURIComponent(param);
+            } catch(e){}
+          }
+          currentTitle = aMatch[2].replace(/<[^>]+>/g, '').trim();
+        }
+      } else if (row.includes('class="result-snippet"')) {
+        const snipMatch = row.match(/class="result-snippet"[^>]*>([\s\S]*?)<\/td>/);
+        if (snipMatch) currentSnippet = snipMatch[1].replace(/<[^>]+>/g, '').trim();
+        
+        if (currentTitle && currentUrl) {
+          const proxiedLink = "/api/proxy/page/" + currentUrl;
+          resultsHTML += `
+            <div class="result">
+              <a href="${proxiedLink}" class="title">${currentTitle}</a>
+              <div class="url">${currentUrl}</div>
+              <div class="snippet">${currentSnippet}</div>
+            </div>
+          `;
+          currentTitle = ""; currentUrl = ""; currentSnippet = "";
+        }
       }
-      if (rawLink.startsWith('/')) rawLink = "https://duckduckgo.com" + rawLink;
-      
-      const title = match[2].replace(/<[^>]+>/g, '');
-      const snippet = match[3].replace(/<[^>]+>/g, '');
-      const proxiedLink = "/api/proxy/page/" + rawLink;
-      
-      resultsHTML += `
-        <div class="result">
-          <a href="${proxiedLink}" class="title">${title}</a>
-          <div class="url">${rawLink}</div>
-          <div class="snippet">${snippet}</div>
-        </div>
-      `;
     }
 
     if (!resultsHTML) {
@@ -219,22 +234,29 @@ router.get("/api/search", async (req, res) => {
     <html>
     <head>
       <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>${query} - EzBypass Search</title>
       <style>
-        body { background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 40px 10vw; margin:0; }
-        .tabs { display: flex; gap: 30px; border-bottom: 1px solid #222; padding-bottom: 12px; margin-bottom: 40px; }
-        .tab { color: #888; text-decoration: none; font-weight: 600; font-size: 16px; position: relative; }
+        body { background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 30px 5vw; margin:0; }
+        .tabs { display: flex; gap: 20px; border-bottom: 1px solid #222; padding-bottom: 12px; margin-bottom: 30px; overflow-x: auto; }
+        .tab { color: #888; text-decoration: none; font-weight: 600; font-size: 15px; position: relative; white-space: nowrap; }
         .tab:hover { color: #bbb; }
         .tab.active { color: #fff; }
         .tab.active::after { content: ''; position: absolute; bottom: -13px; left: 0; right: 0; height: 2px; background: #fff; }
         
-        .result { margin-bottom: 35px; max-width: 650px; }
-        .result .title { color: #8ab4f8; font-size: 20px; text-decoration: none; display: block; margin-bottom: 6px; font-weight: 500; }
+        .result { margin-bottom: 30px; max-width: 650px; }
+        .result .title { color: #8ab4f8; font-size: 18px; text-decoration: none; display: block; margin-bottom: 6px; font-weight: 500; }
         .result .title:hover { text-decoration: underline; }
         .result .url { color: #81c995; font-size: 13px; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .result .snippet { color: #aaa; font-size: 14px; line-height: 1.6; }
+        .result .snippet { color: #aaa; font-size: 14px; line-height: 1.5; }
         
-        .header-logo { color: #fff; font-size: 22px; font-weight: 800; letter-spacing: 2px; margin-bottom: 30px; display: inline-block; text-decoration: none; }
+        .header-logo { color: #fff; font-size: 20px; font-weight: 800; letter-spacing: 2px; margin-bottom: 25px; display: inline-block; text-decoration: none; }
+        
+        @media (max-width: 600px) {
+          body { padding: 20px 15px; }
+          .result .title { font-size: 16px; }
+          .result .snippet { font-size: 13px; }
+        }
       </style>
     </head>
     <body>
@@ -253,7 +275,8 @@ router.get("/api/search", async (req, res) => {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(page);
   } catch (err) {
-    res.status(500).send("Search engine error");
+    // Return explicit visual error on black screen so it's not purely black
+    res.status(500).send(`<html style="background:#000;color:#fff;"><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body style="padding:40px;font-family:sans-serif;"><h2>Search Engine Error</h2><p style="color:#ff6b6b;">${err.message}</p></body></html>`);
   }
 });
 
@@ -434,6 +457,16 @@ const HOME_HTML = `
     }
     .welcome h1 { font-weight: 800; letter-spacing: 6px; text-transform: uppercase; margin: 0 0 10px 0; font-size: 32px; color: #fff; text-shadow: 0 0 20px rgba(255,255,255,0.3); }
     .welcome p { color: #666; letter-spacing: 3px; text-transform: uppercase; font-size: 11px; }
+
+    /* Mobile Compatibility */
+    @media (max-width: 600px) {
+      .topbar { height: 40px; border-radius: 20px; padding: 0 8px; gap: 4px; width: 95%; }
+      .icon-btn { width: 28px; height: 28px; }
+      .icon-btn svg { width: 14px; height: 14px; }
+      #omnibox { font-size: 13px; }
+      .welcome h1 { font-size: 24px; letter-spacing: 4px; }
+      .welcome p { font-size: 9px; letter-spacing: 2px; }
+    }
   </style>
 </head>
 <body>
@@ -518,6 +551,9 @@ const HOME_HTML = `
       if (currentIndex < historyStack.length - 1) { currentIndex++; loadUrl(historyStack[currentIndex], false); }
     });
     document.getElementById('btn-reload').addEventListener('click', () => {
+      // Do not allow reload on home page
+      if (welcome.style.display !== 'none') return;
+      
       if (frame.src && frame.contentWindow) {
         frame.style.opacity = '0';
         loader.style.display = 'flex';
