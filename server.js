@@ -276,7 +276,7 @@ const HOME_HTML = `
     /* Sleek 3D Background */
     .bg-container {
       position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 0;
-      background: radial-gradient(circle at 50% 50%, #1a0b2e 0%, #000 100%);
+      background: radial-gradient(circle at 50% 50%, #151515 0%, #000 100%);
     }
     .grid {
       position: absolute; width: 200%; height: 200%; top: -50%; left: -50%;
@@ -408,7 +408,7 @@ const HOME_HTML = `
       } else if (val.includes('.') && !val.includes(' ')) {
         target = 'https://' + val;
       } else {
-        target = 'https://duckduckgo.com/?q=' + encodeURIComponent(val);
+        target = 'https://www.google.com/search?q=' + encodeURIComponent(val);
       }
       
       input.value = target;
@@ -439,10 +439,14 @@ const HOME_HTML = `
       if (currentIndex < historyStack.length - 1) { currentIndex++; loadUrl(historyStack[currentIndex], false); }
     });
     document.getElementById('btn-reload').addEventListener('click', () => {
-      if (frame.src) {
+      if (frame.src && frame.contentWindow) {
         frame.style.opacity = '0';
         loader.style.display = 'flex';
-        frame.src = frame.src;
+        try {
+          frame.contentWindow.location.reload();
+        } catch(e) {
+          frame.src = frame.src;
+        }
       }
     });
     document.getElementById('btn-home').addEventListener('click', () => {
