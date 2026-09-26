@@ -1,4 +1,5 @@
 import express from "express";
+import https from "https";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -58,29 +59,44 @@ const OFFLINE_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+function checkReplitStatus() {
+  return new Promise((resolve) => {
+    const req = https.get(TARGET, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+      timeout: 5000
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        const text = data.toLowerCase();
+        // If Replit returns 404/502, or the HTML contains the sleep string
+        if (res.statusCode === 404 || res.statusCode === 502 || res.statusCode === 503 ||
+            text.includes("run this app") || text.includes("run this repl")) {
+          resolve(false); // Offline
+        } else {
+          resolve(true); // Online
+        }
+      });
+    });
+
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
 app.use(async (req, res) => {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
-    const checkRes = await fetch(TARGET, { signal: controller.signal });
-    clearTimeout(timeout);
-    
-    const text = await checkRes.text();
-    const lowerText = text.toLowerCase();
-    
-    // Check if the response is Replit's offline page
-    if (lowerText.includes("run this app") || lowerText.includes("run this repl") || lowerText.includes("replit.com")) {
-      // Replit is sleeping/offline
-      return res.status(503).send(OFFLINE_HTML);
-    }
-    
-    // Server is online, redirect user
-    // Using 302 Temporary Redirect so it checks again on the next visit
-    res.redirect(302, TARGET + req.originalUrl);
-  } catch (err) {
-    // Timeout or network error
-    res.status(503).send(OFFLINE_HTML);
+  const isOnline = await checkReplitStatus();
+  
+  if (!isOnline) {
+    res.setHeader("Content-Type", "text/html");
+    return res.status(503).send(OFFLINE_HTML);
   }
+  
+  // If it's online, use a 302 Temporary Redirect
+  res.redirect(302, TARGET + req.originalUrl);
 });
 
 app.listen(PORT, () => console.log(`Redirect server running on port ${PORT}, forwarding to ${TARGET}`));
